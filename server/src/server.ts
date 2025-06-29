@@ -4,8 +4,6 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import type {
-    Room,
-    Participant,
     CreateRoomRequest,
     JoinRoomRequest,
     GetRoomInfoRequest,
@@ -16,15 +14,13 @@ import type {
     RoomUpdateEvent,
     HealthStatus,
     RoomsInfo,
-    AddParticipantResult,
-    RemoveParticipantResult,
-    LogLevel,
-    LogData,
     ServerToClientEvents,
     ClientToServerEvents,
     InterServerEvents,
     SocketData
 } from './types.js';
+import {log} from "./logging";
+import {RoomManager} from "./roomManager";
 
 const app = express();
 const server = createServer(app);
@@ -43,116 +39,11 @@ const io = new Server<
     }
 });
 
+const manager = new RoomManager();
+
 // Middleware
 app.use(cors());
 app.use(express.json());
-
-// Store active rooms and their participants
-const rooms = new Map<string, Room>();
-const socketToRoom = new Map<string, string>();
-
-// Utility function for detailed logging
-function log(level: LogLevel, message: string, data: LogData | null = null): void {
-    const timestamp = new Date().toISOString();
-    const logMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
-
-    if (data) {
-        console.log(logMessage, JSON.stringify(data, null, 2));
-    } else {
-        console.log(logMessage);
-    }
-}
-
-// Room management functions
-function createRoom(roomId: string, creatorSocketId: string): Room {
-    log('info', `Creating new room: ${roomId}`);
-
-    const room: Room = {
-        id: roomId,
-        creator: creatorSocketId,
-        participants: new Map<string, Participant>(),
-        createdAt: new Date().toISOString(),
-        maxParticipants: 4 // Simple limit for demo
-    };
-
-    rooms.set(roomId, room);
-    log('info', `Room created successfully`, { roomId, creatorSocketId });
-    return room;
-}
-
-function addParticipantToRoom(
-    roomId: string,
-    socketId: string,
-    participantInfo: Omit<Participant, 'socketId'>
-): AddParticipantResult {
-    log('info', `Adding participant to room`, { roomId, socketId, participantInfo });
-
-    const room = rooms.get(roomId);
-    if (!room) {
-        log('error', `Room not found: ${roomId}`);
-        return { success: false, error: 'Room not found' };
-    }
-
-    if (room.participants.size >= room.maxParticipants) {
-        log('error', `Room is full`, {
-            roomId,
-            currentCount: room.participants.size,
-            maxCount: room.maxParticipants
-        });
-        return { success: false, error: 'Room is full' };
-    }
-
-    const participant: Participant = {
-        socketId,
-        ...participantInfo,
-        joinedAt: new Date().toISOString()
-    };
-
-    room.participants.set(socketId, participant);
-    socketToRoom.set(socketId, roomId);
-
-    log('info', `Participant added successfully`, {
-        roomId,
-        socketId,
-        totalParticipants: room.participants.size
-    });
-
-    return { success: true, room, participant };
-}
-
-function removeParticipantFromRoom(socketId: string): { roomId: string; room: Room | undefined } | null {
-    const roomId = socketToRoom.get(socketId);
-    if (!roomId) {
-        log('info', `Socket ${socketId} was not in any room`);
-        return null;
-    }
-
-    log('info', `Removing participant from room`, { socketId, roomId });
-
-    const room = rooms.get(roomId);
-    if (room) {
-        room.participants.delete(socketId);
-
-        // If room is empty, delete it
-        if (room.participants.size === 0) {
-            rooms.delete(roomId);
-            log('info', `Room deleted (empty)`, { roomId });
-        } else {
-            log('info', `Participant removed`, {
-                roomId,
-                socketId,
-                remainingParticipants: room.participants.size
-            });
-        }
-    }
-
-    socketToRoom.delete(socketId);
-    return { roomId, room };
-}
-
-function participantsToArray(participants: Map<string, Participant>): Participant[] {
-    return Array.from(participants.values());
-}
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
@@ -161,6 +52,7 @@ io.on('connection', (socket) => {
     // Handle room creation
     socket.on('create-room', (data: CreateRoomRequest, callback) => {
         log('info', `Received create-room request`, { socketId: socket.id, data });
+        const rooms = manager.getRooms();
 
         try {
             const { roomId = uuidv4(), userName } = data;
@@ -186,10 +78,10 @@ io.on('connection', (socket) => {
             }
 
             // Create room
-            const room = createRoom(roomId, socket.id);
+            const room = manager.createRoom(roomId, socket.id);
 
             // Add creator as participant
-            const participantResult = addParticipantToRoom(roomId, socket.id, {
+            const participantResult = manager.addParticipantToRoom(roomId, socket.id, {
                 userName: userName.trim(),
                 isCreator: true,
                 joinedAt: new Date().toISOString()
@@ -226,7 +118,7 @@ io.on('connection', (socket) => {
             // Broadcast room update to all participants
             const updateEvent: RoomUpdateEvent = {
                 roomId,
-                participants: participantsToArray(room.participants),
+                participants: manager.participantsToArray(room.participants),
                 event: 'participant-joined'
             };
 
@@ -251,6 +143,7 @@ io.on('connection', (socket) => {
     // Handle joining existing room
     socket.on('join-room', (data: JoinRoomRequest, callback) => {
         log('info', `Received join-room request`, { socketId: socket.id, data });
+        const rooms = manager.getRooms();
 
         try {
             const { roomId, userName } = data;
@@ -276,7 +169,7 @@ io.on('connection', (socket) => {
             }
 
             // Add participant to room
-            const result = addParticipantToRoom(roomId, socket.id, {
+            const result = manager.addParticipantToRoom(roomId, socket.id, {
                 userName: userName.trim(),
                 isCreator: false,
                 joinedAt: new Date().toISOString()
@@ -304,7 +197,7 @@ io.on('connection', (socket) => {
                     maxParticipants: result.room!.maxParticipants
                 },
                 participant: result.participant!,
-                participants: participantsToArray(result.room!.participants)
+                participants: manager.participantsToArray(result.room!.participants)
             };
 
             log('info', `Successfully joined room`, response);
@@ -313,7 +206,7 @@ io.on('connection', (socket) => {
             // Broadcast to other participants that someone joined
             const updateEvent: RoomUpdateEvent = {
                 roomId,
-                participants: participantsToArray(result.room!.participants),
+                participants: manager.participantsToArray(result.room!.participants),
                 event: 'participant-joined',
                 newParticipant: result.participant!
             };
@@ -339,6 +232,7 @@ io.on('connection', (socket) => {
     // Handle getting room info
     socket.on('get-room-info', (data: GetRoomInfoRequest, callback) => {
         log('info', `Received get-room-info request`, { socketId: socket.id, data });
+        const rooms = manager.getRooms();
 
         try {
             const { roomId } = data;
@@ -369,7 +263,7 @@ io.on('connection', (socket) => {
                     participantCount: room.participants.size,
                     maxParticipants: room.maxParticipants
                 },
-                participants: participantsToArray(room.participants)
+                participants: manager.participantsToArray(room.participants)
             };
 
             log('info', `Room info provided`, response);
@@ -391,18 +285,97 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Handle leaving room explicitly
+    socket.on('leave-room', (data: { roomId: string }, callback) => {
+        log('info', `Received leave-room request`, { socketId: socket.id, data });
+
+        try {
+            const { roomId } = data;
+
+            // Validate input
+            if (!roomId) {
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Room ID is required'
+                };
+                return callback(response);
+            }
+
+            // Check if user is actually in this room
+            const currentRoomId = manager.getRoomBySocketId(socket.id);
+            if (currentRoomId !== roomId) {
+                log('warning', `User attempted to leave room they're not in`, {
+                    socketId: socket.id,
+                    requestedRoomId: roomId,
+                    actualRoomId: currentRoomId
+                });
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'You are not in this room'
+                };
+                return callback(response);
+            }
+
+            // Remove participant from room
+            const result = manager.removeParticipantFromRoom(socket.id);
+
+            if (result && result.room) {
+                // Leave the socket.io room
+                socket.leave(roomId);
+                log('info', `Socket left room channel`, { socketId: socket.id, roomId });
+
+                // Notify remaining participants about the explicit leave
+                const updateEvent: RoomUpdateEvent = {
+                    roomId: result.roomId,
+                    participants: manager.participantsToArray(result.room.participants),
+                    event: 'participant-left',
+                    leftParticipantId: socket.id
+                };
+
+                socket.to(result.roomId).emit('room-updated', updateEvent);
+
+                log('success', `User explicitly left room`, {
+                    socketId: socket.id,
+                    roomId: result.roomId,
+                    remainingParticipants: result.room.participants.size
+                });
+
+                const response: { success: true } = { success: true };
+                callback(response);
+            } else {
+                log('warning', `No room data found when leaving`, { socketId: socket.id, roomId });
+                const response: { success: true } = { success: true };
+                callback(response);
+            }
+
+        } catch (error) {
+            const err = error as Error;
+            log('error', `Error in leave-room handler`, {
+                socketId: socket.id,
+                error: err.message,
+                stack: err.stack
+            });
+
+            const response: ErrorResponse = {
+                success: false,
+                error: 'Internal server error while leaving room'
+            };
+            callback(response);
+        }
+    });
+
     // Handle disconnect
     socket.on('disconnect', (reason) => {
         log('info', `Socket disconnected`, { socketId: socket.id, reason });
 
         try {
-            const result = removeParticipantFromRoom(socket.id);
+            const result = manager.removeParticipantFromRoom(socket.id);
 
             if (result && result.room) {
                 // Notify remaining participants
                 const updateEvent: RoomUpdateEvent = {
                     roomId: result.roomId,
-                    participants: participantsToArray(result.room.participants),
+                    participants: manager.participantsToArray(result.room.participants),
                     event: 'participant-left',
                     leftParticipantId: socket.id
                 };
@@ -433,6 +406,8 @@ io.on('connection', (socket) => {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
+    const rooms = manager.getRooms();
+
     const health: HealthStatus = {
         status: 'healthy',
         timestamp: new Date().toISOString(),
@@ -447,6 +422,8 @@ app.get('/health', (req, res) => {
 
 // Get rooms info endpoint
 app.get('/rooms', (req, res) => {
+    const rooms = manager.getRooms();
+
     const roomsInfo: RoomsInfo = {
         rooms: Array.from(rooms.values()).map(room => ({
             id: room.id,

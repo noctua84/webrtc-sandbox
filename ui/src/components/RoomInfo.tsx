@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import roomStore from '../stores/room.store';
+import {Participant} from "@/types.ts";
 
 const RoomInfo: React.FC = observer(() => {
     const [showRoomId, setShowRoomId] = useState<boolean>(false);
@@ -20,9 +21,14 @@ const RoomInfo: React.FC = observer(() => {
         }
     };
 
-    const handleLeaveRoom = (): void => {
+    const handleLeaveRoom = async (): Promise<void> => {
         if (window.confirm('Are you sure you want to leave this room?')) {
-            roomStore.leaveRoom();
+            try {
+                await roomStore.leaveRoom();
+            } catch (error) {
+                console.error('Error leaving room:', error);
+                // The error is already logged in the store and shown in the UI
+            }
         }
     };
 
@@ -115,7 +121,7 @@ const RoomInfo: React.FC = observer(() => {
                     Participants ({roomStore.participantCount})
                 </h3>
                 <div className="space-y-2">
-                    {roomStore.participants.map((participant) => (
+                    {roomStore.participants.map((participant: Participant) => (
                         <div
                             key={participant.socketId}
                             className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"

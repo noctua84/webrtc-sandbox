@@ -285,25 +285,56 @@ class RoomStore {
         }
     }
 
-    leaveRoom(): void {
+    async leaveRoom(): Promise<void> {
         if (!this.currentRoom) {
             this.log('warning', 'Cannot leave room: not currently in a room');
             return;
         }
 
-        this.log('info', 'Leaving room', {
-            roomId: this.currentRoom.id,
-            participantId: this.currentParticipant?.socketId
+        const roomId = this.currentRoom.id;
+        const participantId = this.currentParticipant?.socketId;
+
+        this.log('info', 'Explicitly leaving room', {
+            roomId,
+            participantId
         });
 
-        runInAction(() => {
-            this.currentRoom = null;
-            this.currentParticipant = null;
-            this.participants = [];
-            this.roomError = null;
-        });
+        try {
+            // Notify server about explicit leave
+            await socketStore.emitWithCallback<{ success: true }>('leave-room', {
+                roomId
+            }, 10000);
 
-        this.log('info', 'Left room successfully');
+            this.log('success', 'Successfully left room on server');
+
+            // Update local state
+            runInAction(() => {
+                this.currentRoom = null;
+                this.currentParticipant = null;
+                this.participants = [];
+                this.roomError = null;
+            });
+
+            this.log('info', 'Local room state cleared after explicit leave');
+
+        } catch (error) {
+            const err = error as Error;
+            this.log('error', 'Failed to leave room on server', {
+                error: err.message,
+                roomId,
+                participantId
+            });
+
+            // Still clear local state even if server call failed
+            runInAction(() => {
+                this.currentRoom = null;
+                this.currentParticipant = null;
+                this.participants = [];
+                this.roomError = `Failed to leave room: ${err.message}`;
+            });
+
+            throw error;
+        }
     }
 
     // Clear room-related logs
