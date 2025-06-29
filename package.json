@@ -1,14 +1,24 @@
 {
-  "name": "${PROJECT_NAME}",
+  "name": "webrtc-streaming-monorepo",
   "version": "1.0.0",
-  "description": "",
-  "main": "dist/index.js",
+  "description": "WebRTC video streaming system with React UI and Node.js signaling server",
+  "private": true,
+  "workspaces": [
+    "ui",
+    "server"
+  ],
   "scripts": {
-    "build": "tsc"
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:ui\"",
+    "dev:ui": "cd ui && npm run dev",
+    "dev:server": "cd server && npm run dev",
+    "install:all": "npm install && npm run install:ui && npm run install:server",
+    "install:ui": "cd ui && npm install",
+    "install:server": "cd server && npm install"
   },
-  "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.5.3"
+    "concurrently": "8.2.2"
   },
-  "private": true
+  "dependencies": {
+    "typescript": "5.8.3"
+  }
 }
