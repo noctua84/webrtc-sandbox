@@ -17,13 +17,15 @@ import type {
     ServerToClientEvents,
     ClientToServerEvents,
     InterServerEvents,
-    SocketData
+    SocketData, ReconnectRoomRequest, ReconnectRoomResponse
 } from './types.js';
 import {log} from "./logging";
 import {RoomManager} from "./roomManager";
+import {roomConfig} from "./config";
 
 const app = express();
 const server = createServer(app);
+const roomCfg = roomConfig
 
 // Configure CORS for Socket.IO
 const io = new Server<
@@ -45,6 +47,14 @@ const manager = new RoomManager();
 app.use(cors());
 app.use(express.json());
 
+// Start cleanup interval
+setInterval(manager.cleanupExpiredRooms, roomCfg.cleanupInterval);
+log('info', `Room cleanup interval started`, {
+    intervalMs: roomCfg.cleanupInterval,
+    roomTimeoutMs: roomCfg.roomTimeoutDuration,
+    reconnectionWindowMs: roomCfg.participantReconnectionWindow
+});
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
     log('info', `New socket connection established`, { socketId: socket.id });
@@ -52,10 +62,9 @@ io.on('connection', (socket) => {
     // Handle room creation
     socket.on('create-room', (data: CreateRoomRequest, callback) => {
         log('info', `Received create-room request`, { socketId: socket.id, data });
-        const rooms = manager.getRooms();
 
         try {
-            const { roomId = uuidv4(), userName } = data;
+            const { roomId = uuidv4(), userName, reconnectionToken } = data;
 
             // Validate input
             if (!userName || userName.trim().length === 0) {
@@ -67,25 +76,29 @@ io.on('connection', (socket) => {
                 return callback(response);
             }
 
-            // Check if room already exists
-            if (rooms.has(roomId)) {
-                log('error', `Room already exists`, { roomId, socketId: socket.id });
+            // Check if room already exists and handle accordingly
+            let room = manager.getRoomById(roomId);
+            let isNewRoom = false;
+
+            if (!room) {
+                // Create new room
+                room = manager.createRoom(roomId, socket.id);
+                isNewRoom = true;
+            } else if (!room.isActive) {
+                log('error', `Room exists but is not active`, { roomId, socketId: socket.id });
                 const response: ErrorResponse = {
                     success: false,
-                    error: 'Room with this ID already exists'
+                    error: 'Room exists but is no longer active'
                 };
                 return callback(response);
             }
 
-            // Create room
-            const room = manager.createRoom(roomId, socket.id);
-
             // Add creator as participant
             const participantResult = manager.addParticipantToRoom(roomId, socket.id, {
                 userName: userName.trim(),
-                isCreator: true,
+                isCreator: isNewRoom, // Only first creator gets creator status
                 joinedAt: new Date().toISOString()
-            });
+            }, reconnectionToken);
 
             if (!participantResult.success) {
                 log('error', `Failed to add creator to room`, {
@@ -106,20 +119,29 @@ io.on('connection', (socket) => {
                 room: {
                     id: room.id,
                     createdAt: room.createdAt,
+                    lastActivity: room.lastActivity,
                     participantCount: room.participants.size,
-                    maxParticipants: room.maxParticipants
+                    maxParticipants: room.maxParticipants,
+                    isActive: room.isActive,
+                    timeoutDuration: room.timeoutDuration
                 },
-                participant: participantResult.participant!
+                participant: participantResult.participant!,
+                reconnectionToken: participantResult.participant!.reconnectionToken!
             };
 
-            log('info', `Room created and creator added successfully`, response);
+            log('info', `Room ${isNewRoom ? 'created' : 'joined'} and participant added successfully`, {
+                ...response,
+                isReconnection: participantResult.isReconnection
+            });
             callback(response);
 
             // Broadcast room update to all participants
+            const eventType = participantResult.isReconnection ? 'participant-reconnected' : 'participant-joined';
             const updateEvent: RoomUpdateEvent = {
                 roomId,
                 participants: manager.participantsToArray(room.participants),
-                event: 'participant-joined'
+                event: eventType,
+                participant: participantResult.participant!
             };
 
             socket.to(roomId).emit('room-updated', updateEvent);
@@ -143,10 +165,9 @@ io.on('connection', (socket) => {
     // Handle joining existing room
     socket.on('join-room', (data: JoinRoomRequest, callback) => {
         log('info', `Received join-room request`, { socketId: socket.id, data });
-        const rooms = manager.getRooms();
 
         try {
-            const { roomId, userName } = data;
+            const { roomId, userName, reconnectionToken } = data;
 
             // Validate input
             if (!roomId || !userName || userName.trim().length === 0) {
@@ -159,11 +180,21 @@ io.on('connection', (socket) => {
             }
 
             // Check if room exists
-            if (!rooms.has(roomId)) {
+            const room = manager.getRoomById(roomId);
+            if (!room) {
                 log('error', `Room not found for join`, { roomId, socketId: socket.id });
                 const response: ErrorResponse = {
                     success: false,
                     error: 'Room not found'
+                };
+                return callback(response);
+            }
+
+            if (!room.isActive) {
+                log('error', `Room is not active for join`, { roomId, socketId: socket.id });
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Room is no longer active'
                 };
                 return callback(response);
             }
@@ -173,7 +204,7 @@ io.on('connection', (socket) => {
                 userName: userName.trim(),
                 isCreator: false,
                 joinedAt: new Date().toISOString()
-            });
+            }, reconnectionToken);
 
             if (!result.success) {
                 log('error', `Failed to join room`, {
@@ -193,22 +224,27 @@ io.on('connection', (socket) => {
                 room: {
                     id: result.room!.id,
                     createdAt: result.room!.createdAt,
+                    lastActivity: result.room!.lastActivity,
                     participantCount: result.room!.participants.size,
-                    maxParticipants: result.room!.maxParticipants
+                    maxParticipants: result.room!.maxParticipants,
+                    isActive: result.room!.isActive,
+                    timeoutDuration: result.room!.timeoutDuration
                 },
                 participant: result.participant!,
-                participants: manager.participantsToArray(result.room!.participants)
+                participants: manager.participantsToArray(result.room!.participants),
+                reconnectionToken: result.participant!.reconnectionToken!
             };
 
-            log('info', `Successfully joined room`, response);
+            log('info', `Successfully joined room`, { ...response, isReconnection: result.isReconnection });
             callback(response);
 
-            // Broadcast to other participants that someone joined
+            // Broadcast to other participants
+            const eventType = result.isReconnection ? 'participant-reconnected' : 'participant-joined';
             const updateEvent: RoomUpdateEvent = {
                 roomId,
                 participants: manager.participantsToArray(result.room!.participants),
-                event: 'participant-joined',
-                newParticipant: result.participant!
+                event: eventType,
+                participant: result.participant!
             };
 
             socket.to(roomId).emit('room-updated', updateEvent);
@@ -229,10 +265,111 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Handle explicit reconnection
+    socket.on('reconnect-room', (data: ReconnectRoomRequest, callback) => {
+        log('info', `Received reconnect-room request`, { socketId: socket.id, data });
+
+        try {
+            const { roomId, reconnectionToken } = data;
+
+            // Validate input
+            if (!roomId || !reconnectionToken) {
+                log('error', `Invalid reconnect-room data`, { socketId: socket.id, roomId, reconnectionToken });
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Room ID and reconnection token are required'
+                };
+                return callback(response);
+            }
+
+            // Check reconnection data
+            const reconnectionData = manager.getParticipantReconnectionToken(reconnectionToken);
+            if (!reconnectionData || reconnectionData.roomId !== roomId) {
+                log('error', `Invalid reconnection token`, {
+                    socketId: socket.id,
+                    roomId,
+                    reconnectionToken,
+                    tokenExists: !!reconnectionData,
+                    tokenRoomId: reconnectionData?.roomId
+                });
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Invalid reconnection token or room'
+                };
+                return callback(response);
+            }
+
+            const room = manager.getRoomById(roomId);
+            if (!room || !room.isActive) {
+                log('error', `Room not found or inactive for reconnection`, { roomId, socketId: socket.id });
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Room not found or no longer active'
+                };
+                return callback(response);
+            }
+
+            // Perform reconnection
+            const participant = reconnectionData.participantData;
+            participant.socketId = socket.id;
+            participant.lastSeen = new Date().toISOString();
+            participant.isConnected = true;
+
+            manager.setRoomParticipant(room.id, participant);
+
+            manager.updateRoomActivity(roomId);
+
+            // Join socket to room channel
+            socket.join(roomId);
+            log('info', `Socket joined room channel after reconnection`, { socketId: socket.id, roomId });
+
+            const response: ReconnectRoomResponse = {
+                success: true,
+                room: {
+                    id: room.id,
+                    createdAt: room.createdAt,
+                    lastActivity: room.lastActivity,
+                    participantCount: room.participants.size,
+                    maxParticipants: room.maxParticipants,
+                    isActive: room.isActive,
+                    timeoutDuration: room.timeoutDuration
+                },
+                participant,
+                participants: manager.participantsToArray(room.participants)
+            };
+
+            log('success', `Successfully reconnected to room`, response);
+            callback(response);
+
+            // Broadcast reconnection to other participants
+            const updateEvent: RoomUpdateEvent = {
+                roomId,
+                participants: manager.participantsToArray(room.participants),
+                event: 'participant-reconnected',
+                participant
+            };
+
+            socket.to(roomId).emit('room-updated', updateEvent);
+
+        } catch (error) {
+            const err = error as Error;
+            log('error', `Error in reconnect-room handler`, {
+                socketId: socket.id,
+                error: err.message,
+                stack: err.stack
+            });
+
+            const response: ErrorResponse = {
+                success: false,
+                error: 'Internal server error while reconnecting to room'
+            };
+            callback(response);
+        }
+    });
+
     // Handle getting room info
     socket.on('get-room-info', (data: GetRoomInfoRequest, callback) => {
         log('info', `Received get-room-info request`, { socketId: socket.id, data });
-        const rooms = manager.getRooms();
 
         try {
             const { roomId } = data;
@@ -245,7 +382,7 @@ io.on('connection', (socket) => {
                 return callback(response);
             }
 
-            const room = rooms.get(roomId);
+            const room = manager.getRoomById(roomId);
             if (!room) {
                 log('info', `Room info requested for non-existent room`, { roomId, socketId: socket.id });
                 const response: ErrorResponse = {
@@ -260,8 +397,11 @@ io.on('connection', (socket) => {
                 room: {
                     id: room.id,
                     createdAt: room.createdAt,
+                    lastActivity: room.lastActivity,
                     participantCount: room.participants.size,
-                    maxParticipants: room.maxParticipants
+                    maxParticipants: room.maxParticipants,
+                    isActive: room.isActive,
+                    timeoutDuration: room.timeoutDuration
                 },
                 participants: manager.participantsToArray(room.participants)
             };
@@ -316,8 +456,8 @@ io.on('connection', (socket) => {
                 return callback(response);
             }
 
-            // Remove participant from room
-            const result = manager.removeParticipantFromRoom(socket.id);
+            // Remove participant from room (explicit leave)
+            const result = manager.removeParticipantFromRoom(socket.id, true);
 
             if (result && result.room) {
                 // Leave the socket.io room
@@ -364,27 +504,41 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Handle disconnect
+    // Handle disconnect (not explicit leave)
     socket.on('disconnect', (reason) => {
         log('info', `Socket disconnected`, { socketId: socket.id, reason });
 
         try {
-            const result = manager.removeParticipantFromRoom(socket.id);
+            const result = manager.removeParticipantFromRoom(socket.id, false); // Not an explicit leave
 
-            if (result && result.room) {
-                // Notify remaining participants
+            if (result && result.room && result.wasConnected) {
+                // Notify remaining participants about disconnection (not complete removal)
                 const updateEvent: RoomUpdateEvent = {
                     roomId: result.roomId,
                     participants: manager.participantsToArray(result.room.participants),
-                    event: 'participant-left',
+                    event: 'participant-disconnected',
                     leftParticipantId: socket.id
                 };
 
                 socket.to(result.roomId).emit('room-updated', updateEvent);
 
+                // Check if any connected participants remain to send reconnection info
+                const connectedParticipants = Array.from(result.room.participants.values()).filter(p => p.isConnected);
+                if (connectedParticipants.length > 0) {
+                    const reconnectionToken = manager.getSocketToReconnectionToken(socket.id);
+                    if (reconnectionToken) {
+                        // Notify about potential reconnection window
+                        io.to(result.roomId).emit('reconnection-available', {
+                            roomId: result.roomId,
+                            timeLeft: roomCfg.participantReconnectionWindow / 1000 // in seconds
+                        });
+                    }
+                }
+
                 log('info', `Notified remaining participants about disconnect`, {
                     roomId: result.roomId,
-                    remainingCount: result.room.participants.size
+                    connectedCount: connectedParticipants.length,
+                    reason
                 });
             }
 
@@ -399,7 +553,7 @@ io.on('connection', (socket) => {
     });
 
     // Handle generic errors
-    socket.on('error', (error) => {
+    socket.on('error' as any, (error: Error) => {
         log('error', `Socket error`, { socketId: socket.id, error: error.message });
     });
 });
@@ -407,13 +561,19 @@ io.on('connection', (socket) => {
 // Health check endpoint
 app.get('/health', (req, res) => {
     const rooms = manager.getRooms();
+    const activeRooms = Array.from(rooms.values()).filter(room => room.isActive);
+    const connectedParticipants = Array.from(rooms.values())
+        .flatMap(room => Array.from(room.participants.values()))
+        .filter(participant => participant.isConnected);
 
     const health: HealthStatus = {
         status: 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         rooms: rooms.size,
-        totalParticipants: Array.from(rooms.values()).reduce((sum, room) => sum + room.participants.size, 0)
+        activeRooms: activeRooms.length,
+        totalParticipants: Array.from(rooms.values()).reduce((sum, room) => sum + room.participants.size, 0),
+        connectedParticipants: connectedParticipants.length
     };
 
     log('info', `Health check requested`, health);
@@ -424,17 +584,47 @@ app.get('/health', (req, res) => {
 app.get('/rooms', (req, res) => {
     const rooms = manager.getRooms();
 
+    const allRooms = Array.from(rooms.values()).map(room => ({
+        id: room.id,
+        createdAt: room.createdAt,
+        lastActivity: room.lastActivity,
+        participantCount: room.participants.size,
+        maxParticipants: room.maxParticipants,
+        isActive: room.isActive,
+        timeoutDuration: room.timeoutDuration
+    }));
+
+    const activeRooms = allRooms.filter(room => room.isActive);
+
     const roomsInfo: RoomsInfo = {
-        rooms: Array.from(rooms.values()).map(room => ({
-            id: room.id,
-            createdAt: room.createdAt,
-            participantCount: room.participants.size,
-            maxParticipants: room.maxParticipants
-        }))
+        rooms: allRooms,
+        activeRooms: activeRooms
     };
 
-    log('info', `Rooms info requested`, { roomCount: roomsInfo.rooms.length });
+    const tokens = manager.getReconnectionTokens();
+
+    log('info', `Rooms info requested`, {
+        totalRooms: allRooms.length,
+        activeRooms: activeRooms.length,
+        reconnectionTokens: tokens.size
+    });
     res.json(roomsInfo);
+});
+
+// Room cleanup endpoint for debugging
+app.post('/cleanup', (req, res) => {
+    log('info', 'Manual cleanup requested');
+    const rooms = manager.getRooms();
+    manager.cleanupExpiredRooms();
+
+    const tokens = manager.getReconnectionTokens();
+
+    res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        remainingRooms: rooms.size,
+        remainingTokens: tokens.size
+    });
 });
 
 const PORT = process.env.PORT || 3001;
@@ -447,6 +637,12 @@ server.listen(PORT, () => {
     log('info', `📡 Socket.IO server ready for connections`);
     log('info', `🏥 Health check available at http://localhost:${PORT}/health`);
     log('info', `📋 Rooms info available at http://localhost:${PORT}/rooms`);
+    log('info', `🧹 Manual cleanup available at http://localhost:${PORT}/cleanup`);
+    log('info', `⚙️ Configuration:`, {
+        roomTimeoutMinutes: roomCfg.roomTimeoutDuration / 60000,
+        reconnectionWindowMinutes: roomCfg.participantReconnectionWindow / 60000,
+        cleanupIntervalMinutes: roomCfg.cleanupInterval / 60000
+    });
 });
 
 // Graceful shutdown
