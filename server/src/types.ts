@@ -7,7 +7,12 @@ export interface Participant {
     joinedAt: string;
     lastSeen: string;
     isConnected: boolean;
-    reconnectionToken?: string; // For reconnection identification
+    reconnectionToken?: string;
+    mediaStatus: {
+        hasVideo: boolean;
+        hasAudio: boolean;
+        isScreenSharing: boolean;
+    };
 }
 
 export interface Room {
@@ -17,20 +22,20 @@ export interface Room {
     createdAt: string;
     lastActivity: string;
     maxParticipants: number;
-    timeoutDuration: number; // Room timeout in milliseconds
+    timeoutDuration: number;
     isActive: boolean;
 }
 
 export interface CreateRoomRequest {
     roomId?: string;
     userName: string;
-    reconnectionToken?: string; // For reconnection attempts
+    reconnectionToken?: string;
 }
 
 export interface JoinRoomRequest {
     roomId: string;
     userName: string;
-    reconnectionToken?: string; // For reconnection attempts
+    reconnectionToken?: string;
 }
 
 export interface ReconnectRoomRequest {
@@ -40,6 +45,50 @@ export interface ReconnectRoomRequest {
 
 export interface GetRoomInfoRequest {
     roomId: string;
+}
+
+export interface LeaveRoomRequest {
+    roomId: string;
+}
+
+// WebRTC Signaling Types
+export type RTCSdpType = 'offer' | 'answer' | 'pranswer' | 'rollback';
+
+export interface RTCSessionDescriptionInit {
+    type: RTCSdpType;
+    sdp?: string;
+}
+
+export interface RTCIceCandidateInit {
+    candidate?: string;
+    sdpMLineIndex?: number | null;
+    sdpMid?: string | null;
+    usernameFragment?: string | null;
+}
+
+export interface WebRTCOffer {
+    roomId: string;
+    targetParticipantId: string;
+    sdp: RTCSessionDescriptionInit;
+}
+
+export interface WebRTCAnswer {
+    roomId: string;
+    targetParticipantId: string;
+    sdp: RTCSessionDescriptionInit;
+}
+
+export interface WebRTCIceCandidate {
+    roomId: string;
+    targetParticipantId: string;
+    candidate: RTCIceCandidateInit;
+}
+
+export interface MediaStatusUpdate {
+    roomId: string;
+    hasVideo: boolean;
+    hasAudio: boolean;
+    isScreenSharing: boolean;
 }
 
 export interface RoomResponse {
@@ -53,14 +102,14 @@ export interface RoomResponse {
 }
 
 export interface CreateRoomResponse {
-    success: true;
+    success: boolean;
     room: RoomResponse;
     participant: Participant;
     reconnectionToken: string;
 }
 
 export interface JoinRoomResponse {
-    success: true;
+    success: boolean;
     room: RoomResponse;
     participant: Participant;
     participants: Participant[];
@@ -68,20 +117,24 @@ export interface JoinRoomResponse {
 }
 
 export interface ReconnectRoomResponse {
-    success: true;
+    success: boolean;
     room: RoomResponse;
     participant: Participant;
     participants: Participant[];
 }
 
 export interface GetRoomInfoResponse {
-    success: true;
+    success: boolean;
     room: RoomResponse;
     participants: Participant[];
 }
 
+export interface LeaveRoomResponse {
+    success: boolean;
+}
+
 export interface ErrorResponse {
-    success: false;
+    success: boolean;
     error: string;
 }
 
@@ -90,7 +143,7 @@ export type ApiResponse<T = any> = T | ErrorResponse;
 export interface RoomUpdateEvent {
     roomId: string;
     participants: Participant[];
-    event: 'participant-joined' | 'participant-left' | 'participant-reconnected' | 'participant-disconnected';
+    event: 'participant-joined' | 'participant-left' | 'participant-reconnected' | 'participant-disconnected' | 'media-status-changed';
     participant?: Participant;
     leftParticipantId?: string;
 }
@@ -143,6 +196,10 @@ export interface LogData {
 export interface ServerToClientEvents {
     'room-updated': (data: RoomUpdateEvent) => void;
     'reconnection-available': (data: { roomId: string; timeLeft: number }) => void;
+    'webrtc-offer': (data: WebRTCOffer) => void;
+    'webrtc-answer': (data: WebRTCAnswer) => void;
+    'webrtc-ice-candidate': (data: WebRTCIceCandidate) => void;
+    'peer-disconnected': (data: { roomId: string; participantId: string }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -150,7 +207,11 @@ export interface ClientToServerEvents {
     'join-room': (data: JoinRoomRequest, callback: (response: ApiResponse<JoinRoomResponse>) => void) => void;
     'reconnect-room': (data: ReconnectRoomRequest, callback: (response: ApiResponse<ReconnectRoomResponse>) => void) => void;
     'get-room-info': (data: GetRoomInfoRequest, callback: (response: ApiResponse<GetRoomInfoResponse>) => void) => void;
-    'leave-room': (data: { roomId: string }, callback: (response: ApiResponse<{ success: true }>) => void) => void;
+    'leave-room': (data: LeaveRoomRequest, callback: (response: ApiResponse<LeaveRoomResponse>) => void) => void;
+    'webrtc-offer': (data: WebRTCOffer, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
+    'webrtc-answer': (data: WebRTCAnswer, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
+    'webrtc-ice-candidate': (data: WebRTCIceCandidate, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
+    'update-media-status': (data: MediaStatusUpdate, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
 }
 
 export interface InterServerEvents {
@@ -159,4 +220,19 @@ export interface InterServerEvents {
 
 export interface SocketData {
     // No additional socket data for this implementation
+}
+
+// Handler Types for Socket.IO
+export interface SocketHandler {
+    setupHandlers(socket: Socket): void;
+}
+
+export interface Socket {
+    id: string;
+    join(room: string): void;
+    leave(room: string): void;
+    to(room: string): any;
+    emit(event: string, ...args: any[]): void;
+    on(event: string, handler: (...args: any[]) => void): void;
+    disconnect(): void;
 }

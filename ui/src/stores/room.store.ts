@@ -1,5 +1,5 @@
 import { makeAutoObservable, runInAction } from 'mobx';
-import socketStore from './socket.store';
+import socketStore from './socket.store.ts';
 import type {
     Room,
     Participant,
@@ -78,7 +78,7 @@ class RoomStore {
         this.log('info', 'Room socket listeners configured');
     }
 
-    private handleRoomUpdate(data: RoomUpdateEvent): void {
+    private async handleRoomUpdate(data: RoomUpdateEvent): Promise<void> {
         this.log('info', 'Received room update', data);
 
         runInAction(() => {
@@ -105,6 +105,20 @@ class RoomStore {
                         participant: data.participant,
                         totalParticipants: data.participants?.length
                     });
+
+                    // Auto-connect to new participant if we have media active
+                    try {
+                        const { default: webrtcStore } = await import('./webrtc.store.ts');
+                        if (webrtcStore.isMediaActive && data.participant.socketId !== this.currentParticipant?.socketId) {
+                            this.log('info', 'Auto-connecting to new participant');
+                            await webrtcStore.initiatePeerConnection(data.participant.socketId, data.participant.userName);
+                        }
+                    } catch (error) {
+                        this.log('error', 'Failed to auto-connect to new participant', {
+                            error: (error as Error).message,
+                            participantId: data.participant.socketId
+                        });
+                    }
                 }
                 break;
 
@@ -114,6 +128,20 @@ class RoomStore {
                         participant: data.participant,
                         totalParticipants: data.participants?.length
                     });
+
+                    // Auto-connect to reconnected participant if we have media active
+                    try {
+                        const { default: webrtcStore } = await import('./webrtc.store.ts');
+                        if (webrtcStore.isMediaActive && data.participant.socketId !== this.currentParticipant?.socketId) {
+                            this.log('info', 'Auto-connecting to reconnected participant');
+                            await webrtcStore.initiatePeerConnection(data.participant.socketId, data.participant.userName);
+                        }
+                    } catch (error) {
+                        this.log('error', 'Failed to auto-connect to reconnected participant', {
+                            error: (error as Error).message,
+                            participantId: data.participant.socketId
+                        });
+                    }
                 }
                 break;
 
@@ -130,6 +158,18 @@ class RoomStore {
                     remainingParticipants: data.participants?.length,
                     note: 'They may be able to reconnect'
                 });
+                break;
+
+            case 'media-status-changed':
+                if (data.participant) {
+                    this.log('info', 'Participant media status changed', {
+                        participant: {
+                            socketId: data.participant.socketId,
+                            userName: data.participant.userName,
+                            mediaStatus: data.participant.mediaStatus
+                        }
+                    });
+                }
                 break;
 
             default:
@@ -483,6 +523,12 @@ class RoomStore {
         });
 
         try {
+            // Import webrtcStore dynamically to avoid circular dependency
+            const { default: webrtcStore } = await import('./webrtc.store.ts');
+
+            // Cleanup WebRTC connections first
+            webrtcStore.cleanup();
+
             // Notify server about explicit leave
             await socketStore.emitWithCallback<{ success: true }>('leave-room', {
                 roomId

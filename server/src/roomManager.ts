@@ -1,4 +1,4 @@
-import type {AddParticipantResult, Participant, RemoveParticipantResult, Room} from "./types";
+import type {AddParticipantResult, Participant, Room} from "./types";
 import {log} from "./logging";
 import {roomConfig} from "./config";
 import {v4 as uuidv4} from 'uuid';
