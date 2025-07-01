@@ -2,7 +2,8 @@ import {log} from "../logging";
 import type {RoomUpdateEvent} from "../types";
 import {Server, Socket} from "socket.io";
 import {RoomManager} from "../roomManager";
-import {roomConfig} from "../config";
+import {ROOM_CONFIG} from "../config";
+
 
 export const handleDisconnect = (socket: Socket, manager: RoomManager, reason: string, io: Server) => {
     log('info', `Socket disconnected`, { socketId: socket.id, reason });
@@ -30,7 +31,7 @@ export const handleDisconnect = (socket: Socket, manager: RoomManager, reason: s
                     // Notify about potential reconnection window
                     io.to(result.roomId).emit('reconnection-available', {
                         roomId: result.roomId,
-                        timeLeft: roomConfig.participantReconnectionWindow / 1000 // in seconds
+                        timeLeft: ROOM_CONFIG.PARTICIPANT_RECONNECTION_WINDOW / 1000 // in seconds
                     });
                 }
             }

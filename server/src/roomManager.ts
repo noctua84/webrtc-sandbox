@@ -1,6 +1,6 @@
 import type {AddParticipantResult, Participant, Room} from "./types";
 import {log} from "./logging";
-import {roomConfig} from "./config";
+import {ROOM_CONFIG, getEnvironmentConfig} from "./config";
 import {v4 as uuidv4} from 'uuid';
 
 export class RoomManager {
@@ -8,27 +8,38 @@ export class RoomManager {
     private socketToRoom: Map<string, string> = new Map();
     private socketToReconnectionToken = new Map<string, string>();
     private reconnectionTokenToParticipant = new Map<string, { roomId: string; participantData: Participant }>();
-    private cfg;
+    private cleanupInterval: NodeJS.Timeout | null = null;
+    private readonly cfg = getEnvironmentConfig();
 
 
     constructor() {
+        this.startCleanupInterval();
         log('info', 'RoomManager initialized');
-
-        // Load configuration from environment or default values
-        this.cfg = roomConfig
     }
 
     createRoom(roomId: string, creatorSocketId: string): Room {
         log('info', `Creating new room: ${roomId}`);
+
+        // Check room limits
+        if (this.rooms.size >= ROOM_CONFIG.MAX_ROOMS) {
+            log('error', `Maximum number of rooms reached`, { maxRooms: ROOM_CONFIG.MAX_ROOMS });
+            throw new Error('Maximum number of rooms reached');
+        }
+
+        // Check if room already exists
+        if (this.rooms.has(roomId)) {
+            log('error', `Room already exists`, { roomId });
+            throw new Error('Room already exists');
+        }
 
         const room: Room = {
             id: roomId,
             creator: creatorSocketId,
             participants: new Map<string, Participant>(),
             createdAt: new Date().toISOString(),
-            maxParticipants: this.cfg.maxParticipants,
+            maxParticipants: ROOM_CONFIG.MAX_PARTICIPANTS,
             lastActivity: "",
-            timeoutDuration: this.cfg.roomTimeoutDuration,
+            timeoutDuration: this.cfg.roomTimeout,
             isActive: true
         };
 
@@ -218,7 +229,7 @@ export class RoomManager {
         return Array.from(participants.values());
     }
 
-    cleanupExpiredRooms(): void {
+    performCleanup(): void {
         // TODO: Cleanup method does not have the necessary context since this.rooms is undefined upon execution.
 
         const now = Date.now();
@@ -254,7 +265,7 @@ export class RoomManager {
             for (const [participantKey, participant] of room.participants.entries()) {
                 if (!participant.isConnected) {
                     const disconnectAge = now - new Date(participant.lastSeen).getTime();
-                    if (disconnectAge > this.cfg.participantReconnectionWindow) {
+                    if (disconnectAge > ROOM_CONFIG.PARTICIPANT_RECONNECTION_WINDOW) {
                         room.participants.delete(participantKey);
                         if (participant.reconnectionToken) {
                             tokensToDelete.push(participant.reconnectionToken);
@@ -291,6 +302,11 @@ export class RoomManager {
         }
     }
 
+    validateReconnectionToken(token: string, roomId: string): boolean {
+        const data = this.reconnectionTokenToParticipant.get(token);
+        return data?.roomId === roomId;
+    }
+
     // Getters for external access
     getRooms(): Map<string, Room> {
         return this.rooms;
@@ -321,11 +337,6 @@ export class RoomManager {
     }
 
     // setters for external access
-    setSocketToRoom(socketId: string, roomId: string): void {
-        log('info', `Setting socket to room mapping`, { socketId, roomId });
-        this.socketToRoom.set(socketId, roomId);
-    }
-
     setRoomParticipant(roomId: string, participant: Participant): void {
         log('info', `Setting participant in room`, { roomId, participant });
         const room = this.rooms.get(roomId);
@@ -338,10 +349,40 @@ export class RoomManager {
         }
     }
 
+    // Lifecycle Management
+    shutdown(): void {
+        if (this.cleanupInterval) {
+            clearInterval(this.cleanupInterval);
+            this.cleanupInterval = null;
+        }
+
+        log('info',`RoomManager shutting down`, {
+            remainingRooms: this.rooms.size,
+            remainingTokens: this.reconnectionTokenToParticipant.size
+        });
+
+        // Clean up all data
+        this.rooms.clear();
+        this.socketToRoom.clear();
+        this.socketToReconnectionToken.clear();
+        this.reconnectionTokenToParticipant.clear();
+    }
 
     // private methods
     private generateReconnectionToken(): string {
         return uuidv4();
+    }
+
+    private startCleanupInterval(): void {
+        this.cleanupInterval = setInterval(() => {
+            this.performCleanup();
+        }, this.cfg.cleanupInterval);
+
+        log('info', `Room cleanup interval started`, {
+            intervalMs: this.cfg.cleanupInterval,
+            roomTimeoutMs: this.cfg.roomTimeout,
+            reconnectionWindowMs: ROOM_CONFIG.PARTICIPANT_RECONNECTION_WINDOW
+        });
     }
 }
 

@@ -19,7 +19,6 @@ import type {
     MediaStatusUpdate, LeaveRoomRequest
 } from './types.js';
 import {RoomManager} from "./roomManager";
-import {roomConfig} from "./config";
 import {
     handleCreateRoom,
     handleGetRoomInfo,
@@ -31,10 +30,11 @@ import {handleWebRTCAnswer, handleWebRTCIceCandidate, handleWebRTCOffer} from ".
 import {handleUpdateMediaStatus} from "./handler/media.handler";
 import {handleDisconnect} from "./handler/connection.handler";
 import {log} from "./logging";
+import {getEnvironmentConfig, ROOM_CONFIG, SERVER_CONFIG} from "./config";
 
 const app = express();
 const server = createServer(app);
-const roomCfg = roomConfig
+const cfg = getEnvironmentConfig()
 
 // Configure CORS for Socket.IO
 const io = new Server<
@@ -44,25 +44,21 @@ const io = new Server<
     SocketData
 >(server, {
     cors: {
-        origin: "http://localhost:5173", // Vite default port
-        methods: ["GET", "POST"],
-        credentials: true
+        origin: SERVER_CONFIG.CORS.ORIGIN,
+        methods: SERVER_CONFIG.CORS.METHODS,
+        credentials: SERVER_CONFIG.CORS.CREDENTIALS,
     }
 });
 
 const manager = new RoomManager();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: SERVER_CONFIG.CORS.ORIGIN,
+    methods: SERVER_CONFIG.CORS.METHODS,
+    credentials: SERVER_CONFIG.CORS.CREDENTIALS
+}));
 app.use(express.json());
-
-// Start cleanup interval
-setInterval(manager.cleanupExpiredRooms, roomCfg.cleanupInterval);
-log('info', `Room cleanup interval started`, {
-    intervalMs: roomCfg.cleanupInterval,
-    roomTimeoutMs: roomCfg.roomTimeoutDuration,
-    reconnectionWindowMs: roomCfg.participantReconnectionWindow
-});
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
@@ -77,7 +73,6 @@ io.on('connection', (socket) => {
     socket.on('join-room', (data: JoinRoomRequest, callback) => {
         handleJoinRoom(socket, manager, data, callback)
     });
-
 
     // Handle explicit reconnection
     socket.on('reconnect-room', (data: ReconnectRoomRequest, callback) => {
@@ -183,7 +178,7 @@ app.get('/rooms', (req, res) => {
 app.post('/cleanup', (req, res) => {
     log('info', 'Manual cleanup requested');
     const rooms = manager.getRooms();
-    manager.cleanupExpiredRooms();
+    manager.performCleanup();
 
     const tokens = manager.getReconnectionTokens();
 
@@ -195,7 +190,7 @@ app.post('/cleanup', (req, res) => {
     });
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = SERVER_CONFIG.PORT|| 3001;
 
 server.listen(PORT, () => {
     log('info', `🚀 WebRTC Signaling Server started`, {
@@ -207,9 +202,9 @@ server.listen(PORT, () => {
     log('info', `📋 Rooms info available at http://localhost:${PORT}/rooms`);
     log('info', `🧹 Manual cleanup available at http://localhost:${PORT}/cleanup`);
     log('info', `⚙️ Configuration:`, {
-        roomTimeoutMinutes: roomCfg.roomTimeoutDuration / 60000,
-        reconnectionWindowMinutes: roomCfg.participantReconnectionWindow / 60000,
-        cleanupIntervalMinutes: roomCfg.cleanupInterval / 60000
+        roomTimeoutMinutes: cfg.roomTimeout / 60000,
+        reconnectionWindowMinutes: ROOM_CONFIG.PARTICIPANT_RECONNECTION_WINDOW / 60000,
+        cleanupIntervalMinutes: cfg.cleanupInterval / 60000
     });
 });
 
