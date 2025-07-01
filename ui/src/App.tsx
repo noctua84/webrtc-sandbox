@@ -1,12 +1,13 @@
 import React from 'react';
 import { observer } from 'mobx-react-lite';
-
+import socketStore from './stores/socket.store.ts';
+import roomStore from './stores/room.store.ts';
 import StatusIndicator from './components/StatusIndicator.tsx';
 import LogViewer from './components/LogViewer.tsx';
 import RoomForm from './components/RoomForm.tsx';
 import RoomInfo from './components/RoomInfo.tsx';
-import socketStore from "@/stores/socket.store.ts";
-import roomStore from "@/stores/room.store.ts";
+import ReconnectionBanner from './components/ReconnectionBanner.tsx';
+
 
 const App: React.FC = observer(() => {
     return (
@@ -43,6 +44,9 @@ const App: React.FC = observer(() => {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     {/* Left Column - Room Management */}
                     <div className="space-y-6">
+                        {/* Reconnection Banner */}
+                        <ReconnectionBanner />
+
                         {/* Room Form or Room Info */}
                         {roomStore.isInRoom ? (
                             <RoomInfo />
@@ -192,4 +196,4 @@ const App: React.FC = observer(() => {
     );
 });
 
-export default App
+export default App;

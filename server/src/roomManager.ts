@@ -219,9 +219,18 @@ export class RoomManager {
     }
 
     cleanupExpiredRooms(): void {
+        // TODO: Cleanup method does not have the necessary context since this.rooms is undefined upon execution.
+
         const now = Date.now();
         const roomsToDelete: string[] = [];
         const tokensToDelete: string[] = [];
+
+        // only temporary fix to avoid undefined error
+        // this.room is currently undefined in the cleanup methods context.
+        if (this.rooms === undefined || this.rooms.size === 0) {
+            log('info', `No rooms to clean up`);
+            return;
+        }
 
         for (const [roomId, room] of this.rooms.entries()) {
             const roomAge = now - new Date(room.lastActivity).getTime();

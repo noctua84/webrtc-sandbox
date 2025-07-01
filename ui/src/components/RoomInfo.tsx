@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import roomStore from '../stores/room.store';
-import {Participant} from "@/types.ts";
 
 const RoomInfo: React.FC = observer(() => {
     const [showRoomId, setShowRoomId] = useState<boolean>(false);
@@ -101,8 +100,11 @@ const RoomInfo: React.FC = observer(() => {
                     <div className="p-3 bg-gray-50 rounded-lg">
                         <label className="text-sm font-medium text-gray-600">Participants</label>
                         <p className="text-sm mt-1">
-                            <span className="font-medium">{roomStore.participantCount}</span>
-                            <span className="text-gray-500"> / {roomStore.currentRoom.maxParticipants}</span>
+                            <span className="font-medium">{roomStore.connectedParticipantCount}</span>
+                            <span className="text-gray-500"> / {roomStore.currentRoom.maxParticipants} connected</span>
+                            {roomStore.participantCount !== roomStore.connectedParticipantCount && (
+                                <span className="text-gray-500"> ({roomStore.participantCount} total)</span>
+                            )}
                         </p>
                     </div>
                 </div>
@@ -118,16 +120,20 @@ const RoomInfo: React.FC = observer(() => {
             {/* Participants List */}
             <div className="mt-6">
                 <h3 className="text-lg font-medium text-gray-800 mb-3">
-                    Participants ({roomStore.participantCount})
+                    Participants ({roomStore.connectedParticipantCount} connected, {roomStore.participantCount} total)
                 </h3>
                 <div className="space-y-2">
-                    {roomStore.participants.map((participant: Participant) => (
+                    {roomStore.participants.map((participant) => (
                         <div
-                            key={participant.socketId}
-                            className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                            key={participant.socketId || `disconnected-${participant.userName}`}
+                            className={`flex items-center justify-between p-3 rounded-lg ${
+                                participant.isConnected ? 'bg-gray-50' : 'bg-yellow-50 border border-yellow-200'
+                            }`}
                         >
                             <div className="flex items-center gap-3">
-                                <div className="w-8 h-8 bg-primary-500 text-white rounded-full flex items-center justify-center text-sm font-medium">
+                                <div className={`w-8 h-8 text-white rounded-full flex items-center justify-center text-sm font-medium ${
+                                    participant.isConnected ? 'bg-primary-500' : 'bg-gray-400'
+                                }`}>
                                     {participant.userName.charAt(0).toUpperCase()}
                                 </div>
                                 <div>
@@ -139,13 +145,20 @@ const RoomInfo: React.FC = observer(() => {
                                     </p>
                                     <p className="text-xs text-gray-500">
                                         {participant.isCreator ? 'Room Creator' : 'Participant'}
+                                        {participant.isConnected ? (
+                                            <> • Connected</>
+                                        ) : (
+                                            <> • Disconnected • May reconnect</>
+                                        )}
                                         {participant.joinedAt && (
                                             <> • Joined {formatDate(participant.joinedAt)}</>
                                         )}
                                     </p>
                                 </div>
                             </div>
-                            <div className="status-dot status-connected"></div>
+                            <div className={`status-dot ${
+                                participant.isConnected ? 'status-connected' : 'bg-yellow-500'
+                            }`}></div>
                         </div>
                     ))}
                 </div>

@@ -7,7 +7,7 @@ import type {
     ConnectionStatus,
     ServerToClientEvents,
     ClientToServerEvents,
-    ApiResponse
+    ApiResponse, ReconnectionAvailableEvent
 } from '../types';
 
 class SocketStore {
@@ -16,6 +16,7 @@ class SocketStore {
     isConnecting: boolean = false;
     connectionError: string | null = null;
     logs: LogEntry[] = [];
+    reconnectionInfo: ReconnectionAvailableEvent | null = null;
 
     constructor() {
         makeAutoObservable(this);
@@ -138,43 +139,20 @@ class SocketStore {
             });
         });
 
-        /**
-        this.socket.on('reconnect', (attemptNumber: number) => {
-            this.log('success', 'Reconnected to signaling server', {
-                attemptNumber,
-                socketId: this.socket?.id
-            });
-        });
-
-        this.socket.on('reconnect_attempt', (attemptNumber: number) => {
-            this.log('info', 'Attempting to reconnect', { attemptNumber });
+        this.socket.on('reconnection-available', (data: ReconnectionAvailableEvent) => {
+            this.log('info', 'Reconnection window available', data);
 
             runInAction(() => {
-                this.isConnecting = true;
+                this.reconnectionInfo = data;
             });
-        });
 
-        this.socket.on('reconnect_error', (error: Error) => {
-            this.log('error', 'Reconnection failed', {
-                error: error.message,
-                attemptNumber: (error as any).attemptNumber
-            });
+            // Clear reconnection info after the time window
+            setTimeout(() => {
+                runInAction(() => {
+                    this.reconnectionInfo = null;
+                });
+            }, data.timeLeft);
         });
-
-        this.socket.on('reconnect_failed', () => {
-            this.log('error', 'All reconnection attempts failed');
-
-            runInAction(() => {
-                this.isConnecting = false;
-                this.connectionError = 'Failed to reconnect after multiple attempts';
-            });
-        });
-
-        // Generic error handler
-        this.socket.on('error', (error: Error) => {
-            this.log('error', 'Socket error', { error: error.message });
-        });
-        */
 
         this.log('info', 'Socket event listeners configured successfully');
     }
@@ -221,13 +199,13 @@ class SocketStore {
 
                 this.log('info', `Received response for event: ${String(event)}`, {
                     response,
-                    success: response?.success
+                    success: 'success' in response ? response.success : false
                 });
 
-                if (response?.success) {
+                if ('success' in response && response.success) {
                     resolve(response as T);
                 } else {
-                    const error = (response as any)?.error || 'Unknown error occurred';
+                    const error = 'error' in response ? response.error : 'Unknown error occurred';
                     this.log('error', `Event '${String(event)}' failed`, { error, response });
                     reject(new Error(error));
                 }
@@ -261,7 +239,7 @@ class SocketStore {
             (handler as any)(...args);
         };
 
-        this.socket.on(event, wrappedHandler as any);
+        this.socket.on(event as any, wrappedHandler as any);
     }
 
     // Remove event listener with logging
@@ -272,7 +250,7 @@ class SocketStore {
         }
 
         this.log('info', `Removing listener for event: ${String(event)}`);
-        this.socket.off(event, handler as any);
+        this.socket.off(event as any, handler as any);
     }
 
     // Clear logs

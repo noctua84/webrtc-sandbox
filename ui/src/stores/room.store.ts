@@ -5,15 +5,22 @@ import type {
     Participant,
     CreateRoomRequest,
     JoinRoomRequest,
+    ReconnectRoomRequest,
     CreateRoomResponse,
     JoinRoomResponse,
+    ReconnectRoomResponse,
     GetRoomInfoResponse,
     RoomUpdateEvent,
+    ReconnectionData,
     LogLevel,
     LogEntry,
     LogData,
     RoomStatus
 } from '../types';
+
+// Reconnection data storage key
+const RECONNECTION_STORAGE_KEY = 'webrtc-reconnection-data';
+const RECONNECTION_EXPIRY_MS = 5 * 60 * 1000; // 5 minutes
 
 class RoomStore {
     currentRoom: Room | null = null;
@@ -21,12 +28,15 @@ class RoomStore {
     participants: Participant[] = [];
     isCreatingRoom: boolean = false;
     isJoiningRoom: boolean = false;
+    isReconnecting: boolean = false;
     roomError: string | null = null;
     logs: LogEntry[] = [];
+    reconnectionData: ReconnectionData | null = null;
 
     constructor() {
         makeAutoObservable(this);
         this.setupSocketListeners();
+        this.loadReconnectionData();
     }
 
     // Detailed logging function
@@ -60,7 +70,7 @@ class RoomStore {
     private setupSocketListeners(): void {
         this.log('info', 'Setting up room-related socket listeners');
 
-        // Listen for room updates (participants joining/leaving)
+        // Listen for room updates (participants joining/leaving/reconnecting)
         socketStore.on('room-updated', (data: RoomUpdateEvent) => {
             this.handleRoomUpdate(data);
         });
@@ -76,10 +86,12 @@ class RoomStore {
                 this.participants = data.participants;
                 this.log('info', 'Updated participants list', {
                     count: this.participants.length,
+                    connectedCount: this.participants.filter(p => p.isConnected).length,
                     participants: this.participants.map(p => ({
                         socketId: p.socketId,
                         userName: p.userName,
-                        isCreator: p.isCreator
+                        isCreator: p.isCreator,
+                        isConnected: p.isConnected
                     }))
                 });
             }
@@ -88,9 +100,18 @@ class RoomStore {
         // Log specific events
         switch (data.event) {
             case 'participant-joined':
-                if (data.newParticipant) {
+                if (data.participant) {
                     this.log('success', 'New participant joined the room', {
-                        participant: data.newParticipant,
+                        participant: data.participant,
+                        totalParticipants: data.participants?.length
+                    });
+                }
+                break;
+
+            case 'participant-reconnected':
+                if (data.participant) {
+                    this.log('success', 'Participant reconnected to the room', {
+                        participant: data.participant,
                         totalParticipants: data.participants?.length
                     });
                 }
@@ -103,8 +124,84 @@ class RoomStore {
                 });
                 break;
 
+            case 'participant-disconnected':
+                this.log('warning', 'Participant disconnected from the room', {
+                    leftParticipantId: data.leftParticipantId,
+                    remainingParticipants: data.participants?.length,
+                    note: 'They may be able to reconnect'
+                });
+                break;
+
             default:
                 this.log('info', 'Room update event', { event: data.event });
+        }
+    }
+
+    // Load reconnection data from localStorage
+    private loadReconnectionData(): void {
+        try {
+            const stored = localStorage.getItem(RECONNECTION_STORAGE_KEY);
+            if (stored) {
+                const data: ReconnectionData = JSON.parse(stored);
+
+                // Check if data is still valid (not expired)
+                const now = Date.now();
+                if (now - data.timestamp < RECONNECTION_EXPIRY_MS) {
+                    runInAction(() => {
+                        this.reconnectionData = data;
+                    });
+
+                    this.log('info', 'Loaded valid reconnection data', {
+                        roomId: data.roomId,
+                        userName: data.userName,
+                        ageMs: now - data.timestamp
+                    });
+                } else {
+                    this.log('info', 'Reconnection data expired, clearing', {
+                        roomId: data.roomId,
+                        ageMs: now - data.timestamp,
+                        expiryMs: RECONNECTION_EXPIRY_MS
+                    });
+                    this.clearReconnectionData();
+                }
+            }
+        } catch (error) {
+            this.log('error', 'Failed to load reconnection data', { error: (error as Error).message });
+            this.clearReconnectionData();
+        }
+    }
+
+    // Save reconnection data to localStorage
+    private saveReconnectionData(roomId: string, reconnectionToken: string, userName: string): void {
+        const data: ReconnectionData = {
+            roomId,
+            reconnectionToken,
+            userName,
+            timestamp: Date.now()
+        };
+
+        try {
+            localStorage.setItem(RECONNECTION_STORAGE_KEY, JSON.stringify(data));
+            runInAction(() => {
+                this.reconnectionData = data;
+            });
+
+            this.log('info', 'Saved reconnection data', { roomId, userName });
+        } catch (error) {
+            this.log('error', 'Failed to save reconnection data', { error: (error as Error).message });
+        }
+    }
+
+    // Clear reconnection data
+    private clearReconnectionData(): void {
+        try {
+            localStorage.removeItem(RECONNECTION_STORAGE_KEY);
+            runInAction(() => {
+                this.reconnectionData = null;
+            });
+            this.log('info', 'Cleared reconnection data');
+        } catch (error) {
+            this.log('error', 'Failed to clear reconnection data', { error: (error as Error).message });
         }
     }
 
@@ -127,7 +224,8 @@ class RoomStore {
 
         this.log('info', 'Attempting to create room', {
             userName: userName.trim(),
-            customRoomId
+            customRoomId,
+            hasReconnectionData: !!this.reconnectionData
         });
 
         try {
@@ -139,11 +237,21 @@ class RoomStore {
                 requestData.roomId = customRoomId.trim();
             }
 
+            // Include reconnection token if available for the same room
+            if (this.reconnectionData &&
+                (!customRoomId || this.reconnectionData.roomId === customRoomId)) {
+                requestData.reconnectionToken = this.reconnectionData.reconnectionToken;
+                this.log('info', 'Including reconnection token in create request');
+            }
+
             this.log('info', 'Sending create-room request', requestData);
 
             const response = await socketStore.emitWithCallback<CreateRoomResponse>('create-room', requestData, 15000);
 
             this.log('success', 'Room created successfully', response);
+
+            // Save reconnection data
+            this.saveReconnectionData(response.room.id, response.reconnectionToken, response.participant.userName);
 
             runInAction(() => {
                 this.currentRoom = response.room;
@@ -154,9 +262,10 @@ class RoomStore {
             });
 
             this.log('info', 'Room state updated after creation', {
-                roomId: this?.currentRoom?.id,
-                participantId: this?.currentParticipant?.socketId,
-                isCreator: this?.currentParticipant?.isCreator
+                roomId: this.currentRoom?.id,
+                participantId: this.currentParticipant?.socketId,
+                isCreator: this.currentParticipant?.isCreator,
+                isActive: this.currentRoom?.isActive
             });
 
             return response;
@@ -208,7 +317,8 @@ class RoomStore {
 
         this.log('info', 'Attempting to join room', {
             roomId: roomId.trim(),
-            userName: userName.trim()
+            userName: userName.trim(),
+            hasReconnectionData: !!this.reconnectionData
         });
 
         try {
@@ -217,11 +327,20 @@ class RoomStore {
                 userName: userName.trim()
             };
 
+            // Include reconnection token if available for this room
+            if (this.reconnectionData && this.reconnectionData.roomId === roomId.trim()) {
+                requestData.reconnectionToken = this.reconnectionData.reconnectionToken;
+                this.log('info', 'Including reconnection token in join request');
+            }
+
             this.log('info', 'Sending join-room request', requestData);
 
             const response = await socketStore.emitWithCallback<JoinRoomResponse>('join-room', requestData, 15000);
 
             this.log('success', 'Successfully joined room', response);
+
+            // Save reconnection data
+            this.saveReconnectionData(response.room.id, response.reconnectionToken, response.participant.userName);
 
             runInAction(() => {
                 this.currentRoom = response.room;
@@ -235,7 +354,8 @@ class RoomStore {
                 roomId: this.currentRoom?.id,
                 participantId: this.currentParticipant?.socketId,
                 totalParticipants: this.participants.length,
-                isCreator: this.currentParticipant?.isCreator
+                isCreator: this.currentParticipant?.isCreator,
+                isActive: this.currentRoom?.isActive
             });
 
             return response;
@@ -251,6 +371,69 @@ class RoomStore {
             runInAction(() => {
                 this.isJoiningRoom = false;
                 this.roomError = err.message;
+            });
+
+            throw error;
+        }
+    }
+
+    async attemptReconnection(): Promise<void> {
+        if (!this.reconnectionData) {
+            const error = 'No reconnection data available';
+            this.log('error', error);
+            throw new Error(error);
+        }
+
+        runInAction(() => {
+            this.isReconnecting = true;
+            this.roomError = null;
+        });
+
+        this.log('info', 'Attempting to reconnect to room', {
+            roomId: this.reconnectionData.roomId,
+            userName: this.reconnectionData.userName
+        });
+
+        try {
+            const requestData: ReconnectRoomRequest = {
+                roomId: this.reconnectionData.roomId,
+                reconnectionToken: this.reconnectionData.reconnectionToken
+            };
+
+            this.log('info', 'Sending reconnect-room request', requestData);
+
+            const response = await socketStore.emitWithCallback<ReconnectRoomResponse>('reconnect-room', requestData, 15000);
+
+            this.log('success', 'Successfully reconnected to room', response);
+
+            runInAction(() => {
+                this.currentRoom = response.room;
+                this.currentParticipant = response.participant;
+                this.participants = response.participants || [];
+                this.isReconnecting = false;
+                this.roomError = null;
+            });
+
+            this.log('info', 'Room state updated after reconnection', {
+                roomId: this.currentRoom?.id,
+                participantId: this.currentParticipant?.socketId,
+                totalParticipants: this.participants.length,
+                isActive: this.currentRoom?.isActive
+            });
+
+        } catch (error) {
+            const err = error as Error;
+            this.log('error', 'Failed to reconnect to room', {
+                error: err.message,
+                roomId: this.reconnectionData.roomId
+            });
+
+            // Clear invalid reconnection data
+            this.clearReconnectionData();
+
+            runInAction(() => {
+                this.isReconnecting = false;
+                this.roomError = `Reconnection failed: ${err.message}`;
             });
 
             throw error;
@@ -307,6 +490,9 @@ class RoomStore {
 
             this.log('success', 'Successfully left room on server');
 
+            // Clear reconnection data since this is an explicit leave
+            this.clearReconnectionData();
+
             // Update local state
             runInAction(() => {
                 this.currentRoom = null;
@@ -326,6 +512,8 @@ class RoomStore {
             });
 
             // Still clear local state even if server call failed
+            this.clearReconnectionData();
+
             runInAction(() => {
                 this.currentRoom = null;
                 this.currentParticipant = null;
@@ -353,6 +541,11 @@ class RoomStore {
         this.log('info', 'Room error cleared');
     }
 
+    // Clear reconnection data manually
+    clearReconnection(): void {
+        this.clearReconnectionData();
+    }
+
     // Computed properties
     get isInRoom(): boolean {
         return this.currentRoom !== null && this.currentParticipant !== null;
@@ -366,17 +559,26 @@ class RoomStore {
         return this.participants.length;
     }
 
+    get connectedParticipantCount(): number {
+        return this.participants.filter(p => p.isConnected).length;
+    }
+
     get canCreateRoom(): boolean {
-        return socketStore.isConnected && !this.isCreatingRoom && !this.isJoiningRoom && !this.isInRoom;
+        return socketStore.isConnected && !this.isCreatingRoom && !this.isJoiningRoom && !this.isReconnecting && !this.isInRoom;
     }
 
     get canJoinRoom(): boolean {
-        return socketStore.isConnected && !this.isCreatingRoom && !this.isJoiningRoom && !this.isInRoom;
+        return socketStore.isConnected && !this.isCreatingRoom && !this.isJoiningRoom && !this.isReconnecting && !this.isInRoom;
+    }
+
+    get canReconnect(): boolean {
+        return socketStore.isConnected && !this.isInRoom && !!this.reconnectionData && !this.isReconnecting;
     }
 
     get roomStatus(): RoomStatus {
         if (this.isCreatingRoom) return 'creating';
         if (this.isJoiningRoom) return 'joining';
+        if (this.isReconnecting) return 'reconnecting';
         if (this.isInRoom) return 'in-room';
         if (this.roomError) return 'error';
         return 'idle';
