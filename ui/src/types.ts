@@ -93,6 +93,7 @@ export interface CreateRoomResponse {
     room: Room;
     participant: Participant;
     reconnectionToken: string;
+    error?: any;
 }
 
 export interface JoinRoomResponse {
@@ -101,6 +102,7 @@ export interface JoinRoomResponse {
     participant: Participant;
     participants: Participant[];
     reconnectionToken: string;
+    error?: any;
 }
 
 export interface ReconnectRoomResponse {
@@ -108,6 +110,7 @@ export interface ReconnectRoomResponse {
     room: Room;
     participant: Participant;
     participants: Participant[];
+    error?: any;
 }
 
 export interface GetRoomInfoResponse {
