@@ -66,53 +66,83 @@ io.on('connection', (socket) => {
 
     // Handle room creation
     socket.on('create-room', (data: CreateRoomRequest, callback) => {
+        log('info', `Socket requested to create room`, { socketId: socket.id, userName: data.userName });
         handleCreateRoom(socket, manager, data, callback )
     });
 
     // Handle joining existing room
     socket.on('join-room', (data: JoinRoomRequest, callback) => {
+        log('info', `Socket requested to join room`, { socketId: socket.id, roomId: data.roomId });
         handleJoinRoom(socket, manager, data, callback)
     });
 
     // Handle explicit reconnection
     socket.on('reconnect-room', (data: ReconnectRoomRequest, callback) => {
+        log('info', `Socket requested to reconnect to room`, { socketId: socket.id, roomId: data.roomId });
         handleReconnectRoom(socket, manager, data, callback)
     });
 
     // Handle getting room info
     socket.on('get-room-info', (data: GetRoomInfoRequest, callback) => {
+        log('info', `Socket requested room info`, { socketId: socket.id, roomId: data.roomId });
         handleGetRoomInfo(socket, manager, data, callback);
     });
 
     // Handle leaving room explicitly
     socket.on('leave-room', (data: LeaveRoomRequest, callback) => {
+        log('info', `Socket requested to leave room`, { socketId: socket.id, roomId: data.roomId });
         handleLeaveRoom(socket, manager, data, callback);
     });
 
     // WebRTC Signaling Event Handlers
     // Handle WebRTC offer
     socket.on('webrtc-offer', (data: WebRTCOffer, callback) => {
+        log('info', `Received WebRTC offer`, {
+            socketId: socket.id,
+            roomId: data.roomId,
+            targetParticipantId: data.targetParticipantId
+        });
         handleWebRTCOffer(socket, manager, io, data, callback);
     });
 
     // Handle WebRTC answer
     socket.on('webrtc-answer', (data: WebRTCAnswer, callback) => {
+        log('info', `Received WebRTC answer`, {
+            socketId: socket.id,
+            roomId: data.roomId,
+            targetParticipantId: data.targetParticipantId
+        });
         handleWebRTCAnswer(socket, manager, io, data, callback);
     });
 
     // Handle WebRTC ICE candidate
     socket.on('webrtc-ice-candidate', (data: WebRTCIceCandidate, callback) => {
+        log('info', `Received WebRTC ICE candidate`, {
+            socketId: socket.id,
+            roomId: data.roomId,
+            targetParticipantId: data.targetParticipantId
+        });
         handleWebRTCIceCandidate(socket, manager, io, data, callback);
     });
 
     // Handle media status updates
     socket.on('update-media-status', (data: MediaStatusUpdate, callback) => {
-       handleUpdateMediaStatus(socket, manager, io, data, callback);
+        log('info', `Received media status update`, {
+            socketId: socket.id,
+            roomId: data.roomId,
+            mediaStatus: {
+                hasVideo: data.hasVideo,
+                hasAudio: data.hasAudio,
+                isScreenSharing: data.isScreenSharing
+            }
+        });
+        handleUpdateMediaStatus(socket, manager, io, data, callback);
     });
 
     // Handle disconnect (not explicit leave)
     socket.on('disconnect', (reason) => {
-       handleDisconnect(socket, manager, reason, io);
+        log('info', `Socket disconnected`, { socketId: socket.id, reason });
+        handleDisconnect(socket, manager, io, reason);
     });
 
     // Handle generic errors
