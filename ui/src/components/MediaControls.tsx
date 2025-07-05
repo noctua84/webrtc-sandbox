@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import webrtcStore from "@/stores/webrtc.store";
 import roomStore from "@/stores/room.store";
@@ -34,9 +34,12 @@ const getConnectionStatusText = (connectionState: RTCPeerConnectionState): strin
 // ============================================================================
 
 const MediaControls: React.FC = observer(() => {
+    const [isRunningDiagnostic, setIsRunningDiagnostic] = useState(false);
+    const [diagnosticResults, setDiagnosticResults] = useState<any>(null);
+
     const handleStartMedia = async () => {
         try {
-            await webrtcStore.startMedia({ video: true, audio: true });
+            await webrtcStore.startMedia({video: true, audio: true});
 
             // Auto-connect to all existing participants
             if (roomStore.otherParticipants.length > 0) {
@@ -65,6 +68,25 @@ const MediaControls: React.FC = observer(() => {
 
     const handleToggleAudio = () => {
         webrtcStore.toggleAudio();
+    };
+
+    const handleRunDiagnostic = async () => {
+        setIsRunningDiagnostic(true);
+        setDiagnosticResults(null);
+
+        try {
+            // Note: This assumes the diagnostic methods are added to the WebRTC store
+            const results = await (webrtcStore as any).testWebRTCConnectivity();
+            setDiagnosticResults(results);
+        } catch (error) {
+            console.error('Diagnostic test failed:', error);
+            setDiagnosticResults({
+                error: 'Diagnostic test failed to run',
+                details: (error as Error).message
+            });
+        } finally {
+            setIsRunningDiagnostic(false);
+        }
     };
 
     const totalOtherParticipants = roomStore.otherParticipants.length;
@@ -108,7 +130,6 @@ const MediaControls: React.FC = observer(() => {
                         </button>
                     </>
                 )}
-
                 {webrtcStore.isMediaActive && (
                     <>
                         {/* Media Toggle Controls */}
@@ -178,6 +199,126 @@ const MediaControls: React.FC = observer(() => {
                             </button>
                         </div>
                     </>
+                )}
+            </div>
+
+            {/* WebRTC Connectivity Diagnostic Section */}
+            <div className="mt-6 p-4 bg-purple-50 border border-purple-200 rounded-lg">
+                <h4 className="text-sm font-medium text-purple-800 mb-3 flex items-center gap-2">
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                    </svg>
+                    WebRTC Connectivity Diagnostic
+                </h4>
+
+                <p className="text-xs text-purple-700 mb-3">
+                    Run this test to diagnose WebRTC connection issues and get specific recommendations.
+                </p>
+
+                <button
+                    onClick={handleRunDiagnostic}
+                    disabled={isRunningDiagnostic}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-purple-400 disabled:cursor-not-allowed transition-colors"
+                >
+                    {isRunningDiagnostic ? (
+                        <>
+                            <svg className="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H8a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H12a1 1 0 110-2h4a1 1 0 011 1v4a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clipRule="evenodd" />
+                            </svg>
+                            Running Diagnostic...
+                        </>
+                    ) : (
+                        <>
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-3.976 0 3.066 3.066 0 00-1.745-.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            Run Connectivity Test
+                        </>
+                    )}
+                </button>
+
+                {/* Diagnostic Results Display */}
+                {diagnosticResults && (
+                    <div className="mt-4 space-y-3">
+                        {diagnosticResults.error ? (
+                            <div className="p-3 bg-red-50 border border-red-200 rounded">
+                                <div className="text-sm text-red-800">
+                                    <strong>Test Error:</strong> {diagnosticResults.error}
+                                </div>
+                                {diagnosticResults.details && (
+                                    <div className="text-xs text-red-600 mt-1">
+                                        {diagnosticResults.details}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <>
+                                {/* Test Results Summary */}
+                                <div className="p-3 bg-white border border-purple-200 rounded">
+                                    <h5 className="text-xs font-medium text-purple-800 mb-2">Test Results:</h5>
+                                    <div className="space-y-1 text-xs">
+                                        <div className="flex justify-between">
+                                            <span>Media Access:</span>
+                                            <span className={diagnosticResults.mediaAccess ? 'text-green-600' : 'text-red-600'}>
+                                                {diagnosticResults.mediaAccess ? '✅ PASS' : '❌ FAIL'}
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>STUN Connectivity:</span>
+                                            <span className={diagnosticResults.stunConnectivity ? 'text-green-600' : 'text-red-600'}>
+                                                {diagnosticResults.stunConnectivity ? '✅ PASS' : '❌ FAIL'}
+                                            </span>
+                                        </div>
+                                        <div className="flex justify-between">
+                                            <span>ICE Candidates:</span>
+                                            <span className={diagnosticResults.candidateGeneration ? 'text-green-600' : 'text-red-600'}>
+                                                {diagnosticResults.candidateGeneration ? '✅ PASS' : '❌ FAIL'}
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Issues Detected */}
+                                {diagnosticResults.detectedIssues && diagnosticResults.detectedIssues.length > 0 && (
+                                    <div className="p-3 bg-red-50 border border-red-200 rounded">
+                                        <h5 className="text-xs font-medium text-red-800 mb-2">🚨 Issues Detected:</h5>
+                                        <ul className="text-xs text-red-700 space-y-1">
+                                            {diagnosticResults.detectedIssues.map((issue: string, index: number) => (
+                                                <li key={index}>• {issue}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+
+                                {/* Recommendations */}
+                                {diagnosticResults.recommendations && diagnosticResults.recommendations.length > 0 && (
+                                    <div className="p-3 bg-blue-50 border border-blue-200 rounded">
+                                        <h5 className="text-xs font-medium text-blue-800 mb-2">💡 Recommendations:</h5>
+                                        <ul className="text-xs text-blue-700 space-y-1">
+                                            {diagnosticResults.recommendations.map((rec: string, index: number) => (
+                                                <li key={index}>• {rec}</li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
+
+                                {/* All Tests Passed */}
+                                {diagnosticResults.mediaAccess && diagnosticResults.stunConnectivity && diagnosticResults.candidateGeneration && (
+                                    <div className="p-3 bg-green-50 border border-green-200 rounded">
+                                        <div className="text-sm text-green-800 flex items-center gap-2">
+                                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                            </svg>
+                                            <strong>All connectivity tests passed!</strong>
+                                        </div>
+                                        <p className="text-xs text-green-600 mt-1">
+                                            WebRTC should work properly. If you're still having connection issues, check the detailed logs.
+                                        </p>
+                                    </div>
+                                )}
+                            </>
+                        )}
+                    </div>
                 )}
             </div>
 
@@ -410,6 +551,7 @@ const MediaControls: React.FC = observer(() => {
                     <div><strong>Camera:</strong> Share video and audio with participants</div>
                     <div><strong>Screen Share:</strong> Share your screen instead of camera</div>
                     <div><strong>Toggles:</strong> Mute/unmute during active calls</div>
+                    <div><strong>Diagnostic:</strong> Test WebRTC connectivity and troubleshoot issues</div>
                     {totalOtherParticipants > 0 && (
                         <div className="pt-1 border-t border-gray-300">
                             <strong>Tip:</strong> Connections establish automatically when you start media
@@ -438,5 +580,6 @@ const MediaControls: React.FC = observer(() => {
         </div>
     );
 });
+
 
 export default MediaControls;

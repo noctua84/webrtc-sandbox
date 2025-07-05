@@ -2,47 +2,62 @@ import { Server, Socket } from 'socket.io';
 import { RoomManager } from '../roomManager';
 import { log } from '../logging';
 
-export const handleDisconnect = (socket: Socket, manager: RoomManager, io: Server, reason: string) => {
-    log('info', `Socket disconnected`, {
+// ============================================================================
+// ENHANCED DISCONNECT HANDLER WITH WEBRTC CLEANUP LOGGING
+// ============================================================================
+
+export const handleDisconnect = (
+    socket: Socket,
+    manager: RoomManager,
+    io: Server,
+    reason: string
+) => {
+    log('info', '🔌 [DISCONNECT] Socket disconnecting', {
         socketId: socket.id,
-        reason
+        reason,
+        timestamp: new Date().toISOString()
     });
 
     try {
-        // Get the room the participant was in before removing them
         const roomId = manager.getRoomBySocketId(socket.id);
 
         if (roomId) {
-            log('info', `Participant disconnecting from room`, {
+            const room = io.sockets.adapter.rooms.get(roomId);
+            const otherParticipants = room ? Array.from(room).filter(id => id !== socket.id) : [];
+
+            log('info', '📡 [DISCONNECT] Broadcasting peer disconnection for WebRTC cleanup', {
                 socketId: socket.id,
-                roomId
+                roomId,
+                otherParticipants: otherParticipants.length,
+                webrtcCleanupTargets: otherParticipants
             });
 
-            // CRITICAL FIX: Broadcast peer disconnection BEFORE removing participant
-            // This ensures other participants can clean up WebRTC connections
+            // Broadcast to other participants for WebRTC cleanup
             socket.to(roomId).emit('peer-disconnected', {
                 roomId,
                 participantId: socket.id
             });
 
-            log('success', `Broadcasted peer disconnection`, {
+            log('success', '✅ [DISCONNECT] WebRTC cleanup signal sent', {
                 socketId: socket.id,
-                roomId
+                roomId,
+                notifiedParticipants: otherParticipants.length
             });
         }
 
-        // Remove the participant from the room
-        const result = manager.removeParticipantFromRoom(socket.id, false); // false = not explicit leave (just disconnect)
+        // Remove participant using correct method
+        const result = manager.removeParticipantFromRoom(socket.id, false);
 
         if (result && result.room) {
-            log('info', `Participant removed from room`, {
+            log('info', '📊 [DISCONNECT] Room state after participant removal', {
                 socketId: socket.id,
                 roomId: result.roomId,
                 wasConnected: result.wasConnected,
-                remainingParticipants: result.room.participants.size
+                remainingParticipants: result.room.participants.size,
+                roomStillActive: result.room.isActive
             });
 
-            // Broadcast room update to remaining participants
+            // Broadcast room update
             io.to(result.roomId).emit('room-updated', {
                 roomId: result.roomId,
                 participants: Array.from(result.room.participants.values()),
@@ -50,19 +65,21 @@ export const handleDisconnect = (socket: Socket, manager: RoomManager, io: Serve
                 leftParticipantId: socket.id
             });
 
-            log('success', `Broadcasted room update after disconnection`, {
+            log('success', '✅ [DISCONNECT] Room update broadcasted', {
                 socketId: socket.id,
                 roomId: result.roomId,
-                remainingParticipants: result.room.participants.size
+                updateSentTo: result.room.participants.size,
+                eventType: 'participant-disconnected'
             });
         }
 
     } catch (error) {
         const err = error as Error;
-        log('error', 'Error handling disconnect', {
+        log('error', '💥 [DISCONNECT] Error handling disconnect', {
             socketId: socket.id,
             error: err.message,
-            stack: err.stack
+            stack: err.stack,
+            reason
         });
     }
 };
