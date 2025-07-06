@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { observer } from 'mobx-react-lite';
 import webrtcStore from "@/stores/webrtc.store";
 import roomStore from "@/stores/room.store";
+import WebRTCConnectivityDiagnostics from "@/components/WebRTCConnectivityDiagnostics.tsx";
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -321,6 +322,9 @@ const MediaControls: React.FC = observer(() => {
                     </div>
                 )}
             </div>
+
+            {/* Add the diagnostics component */}
+            <WebRTCConnectivityDiagnostics />
 
             {/* Enhanced Connection Status */}
             {webrtcStore.isMediaActive && totalOtherParticipants > 0 && (

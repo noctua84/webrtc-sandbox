@@ -1,5 +1,5 @@
 // Complete Enhanced WebRTC Store with comprehensive logging for debugging
-import { makeAutoObservable, runInAction } from 'mobx';
+import {action, computed, makeAutoObservable, observable, runInAction} from 'mobx';
 import socketStore from './socket.store';
 import roomStore from './room.store';
 import type {
@@ -13,20 +13,50 @@ import type {
     LogEntry,
     LogData
 } from '../types';
+import {ConnectivityTestResult, runWebRTCDiagnostics} from "@/diagnostics/webrtc.diagnostics.ts";
 
 // ============================================================================
 // CONSTANTS & CONFIGURATION
 // ============================================================================
 
 const ICE_SERVERS: RTCIceServer[] = [
+    // Google STUN servers
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' }
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+
+    // Cloudflare STUN servers
+    { urls: 'stun:stun.cloudflare.com:3478' },
+
+    // OpenRelay free TURN servers (for development/testing)
+    {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+    {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+    },
+
+    // Twilio STUN servers (backup)
+    { urls: 'stun:global.stun.twilio.com:3478' },
 ];
 
 const RTC_CONFIGURATION: RTCConfiguration = {
     iceServers: ICE_SERVERS,
-    iceCandidatePoolSize: 10
+    iceCandidatePoolSize: 10,
+    iceTransportPolicy: 'all', // Use both STUN and TURN
+    bundlePolicy: 'balanced',
+    rtcpMuxPolicy: 'require'
 };
 
 const CONNECTION_CONFIG = {
@@ -131,6 +161,9 @@ class WebRTCStore {
     private connectionInitiators: Set<string> = new Set();
     private connectionTimeouts: Map<string, NodeJS.Timeout> = new Map();
 
+    @observable connectivityTestResult: ConnectivityTestResult | null = null;
+    @observable isRunningConnectivityTest = false;
+
     constructor() {
         makeAutoObservable(this, {
             localStream: true,
@@ -176,6 +209,7 @@ class WebRTCStore {
         this.log('info', '🧹 WebRTC logs cleared');
     }
 
+    /**
     private logConnectionProgress(participantId: string, connection: RTCPeerConnection, event: string): void {
         const states = logWebRTCStates(participantId, connection, event);
         this.log('info', `📊 Connection Progress: ${event}`, states);
@@ -189,6 +223,7 @@ class WebRTCStore {
             this.log('error', '❌ ICE connection failed', { participantId });
         }
     }
+    */
 
     // ========================================================================
     // SOCKET EVENT HANDLERS WITH ENHANCED LOGGING
@@ -481,170 +516,195 @@ class WebRTCStore {
     // ========================================================================
 
     async createPeerConnection(participantId: string, userName: string, isInitiator: boolean): Promise<PeerConnection> {
-        this.log('info', '🔧 Creating peer connection', {
-            participantId,
-            userName,
-            isInitiator,
-            iceServers: ICE_SERVERS.length
-        });
+        this.log('info', 'Creating peer connection', { participantId, userName, isInitiator });
 
-        const connection = new RTCPeerConnection(RTC_CONFIGURATION);
+        try {
+            const connection = new RTCPeerConnection(RTC_CONFIGURATION);
 
-        const peerConnection: PeerConnection = {
-            participantId,
-            userName,
-            connection,
-            isInitiator,
-            connectionState: connection.connectionState,
-            iceConnectionState: connection.iceConnectionState
-        };
-
-        this.setupPeerConnectionEventHandlers(peerConnection);
-        this.peerConnections.set(participantId, peerConnection);
-
-        if (this.localStream) {
-            this.addStreamToPeerConnection(peerConnection, this.localStream);
-        }
-
-        this.log('success', '✅ Peer connection created successfully', {
-            participantId,
-            userName,
-            isInitiator,
-            totalConnections: this.peerConnections.size,
-            initialState: logWebRTCStates(participantId, connection, 'created')
-        });
-
-        return peerConnection;
-    }
-
-    private setupPeerConnectionEventHandlers(peerConnection: PeerConnection): void {
-        const { connection, participantId, userName } = peerConnection;
-
-        // Enhanced connection state monitoring
-        connection.onconnectionstatechange = () => {
-            this.log('info', '🔄 Connection state changed', {
+            const peerConnection: PeerConnection = {
                 participantId,
                 userName,
-                newState: connection.connectionState,
-                fullState: logWebRTCStates(participantId, connection, 'connection-state-change')
+                connection,
+                isInitiator,
+                connectionState: connection.connectionState,
+                iceConnectionState: connection.iceConnectionState
+            };
+
+            // Set up comprehensive event handlers
+            this.setupPeerConnectionHandlers(peerConnection);
+
+            // Add to our map
+            this.peerConnections.set(participantId, peerConnection);
+
+            // Add local stream if available
+            if (this.localStream) {
+                this.addStreamToPeerConnection(peerConnection, this.localStream);
+            }
+
+            this.log('success', 'Peer connection created', {
+                participantId,
+                userName,
+                isInitiator,
+                totalConnections: this.peerConnections.size
+            });
+
+            return peerConnection;
+        } catch (error) {
+            this.log('error', 'Failed to create peer connection', {
+                participantId,
+                userName,
+                error: (error as Error).message
+            });
+            throw error;
+        }
+    }
+
+    private setupPeerConnectionHandlers(peerConnection: PeerConnection): void {
+        const { connection, participantId, userName } = peerConnection;
+
+        // Connection state changes
+        connection.onconnectionstatechange = () => {
+            this.log('info', 'Peer connection state changed', {
+                participantId,
+                userName,
+                state: connection.connectionState,
+                iceState: connection.iceConnectionState,
+                gatheringState: connection.iceGatheringState
             });
 
             runInAction(() => {
                 peerConnection.connectionState = connection.connectionState;
             });
 
-            if (connection.connectionState === 'connected') {
-                this.clearConnectionTimeout(participantId);
-                this.clearRetryAttempts(participantId);
-                this.log('success', '🎉 PEER CONNECTION ESTABLISHED!', {
+            if (connection.connectionState === 'failed') {
+                this.log('error', 'Peer connection failed', {
                     participantId,
                     userName,
-                    finalState: logWebRTCStates(participantId, connection, 'connected')
+                    iceState: connection.iceConnectionState,
+                    gatheringState: connection.iceGatheringState
                 });
-            } else if (connection.connectionState === 'failed') {
-                this.log('error', '❌ Peer connection failed', {
+                this.handleConnectionFailure(participantId, 'Connection failed');
+            } else if (connection.connectionState === 'connected') {
+                this.log('success', 'Peer connection established successfully', {
                     participantId,
-                    userName,
-                    failedState: logWebRTCStates(participantId, connection, 'failed')
+                    userName
                 });
-
-                if (peerConnection.isInitiator) {
-                    this.retryConnection(participantId, userName);
-                } else {
-                    this.closePeerConnection(participantId);
-                }
             }
         };
 
-        // Enhanced ICE connection monitoring
+        // ICE connection state changes with detailed logging
         connection.oniceconnectionstatechange = () => {
-            this.logConnectionProgress(participantId, connection, 'ice-connection-state-change');
+            this.log('info', 'ICE connection state changed', {
+                participantId,
+                userName,
+                iceState: connection.iceConnectionState,
+                gatheringState: connection.iceGatheringState
+            });
 
             runInAction(() => {
                 peerConnection.iceConnectionState = connection.iceConnectionState;
             });
 
             if (connection.iceConnectionState === 'failed') {
-                this.log('error', '❌ ICE connection failed - checking for STUN server issues', {
-                    participantId,
-                    iceServers: ICE_SERVERS,
-                    fullState: logWebRTCStates(participantId, connection, 'ice-failed')
-                });
+                this.log('error', 'ICE connection failed', { participantId, userName });
+                this.handleConnectionFailure(participantId, 'ICE connection failed');
+            } else if (connection.iceConnectionState === 'disconnected') {
+                this.log('warning', 'ICE connection disconnected', { participantId, userName });
+                // Don't immediately close - might reconnect
             }
         };
 
-        // Enhanced ICE gathering monitoring
+        // ICE gathering state changes
         connection.onicegatheringstatechange = () => {
-            this.log('info', '🧊 ICE gathering state changed', {
-                participantId,
-                newState: connection.iceGatheringState,
-                fullState: logWebRTCStates(participantId, connection, 'ice-gathering-state-change')
-            });
-        };
-
-        // Enhanced ICE candidate generation monitoring
-        connection.onicecandidate = async (event) => {
-            if (event.candidate) {
-                const candidateInfo = {
-                    participantId,
-                    candidateType: event.candidate.type,
-                    protocol: event.candidate.protocol,
-                    address: event.candidate.address,
-                    port: event.candidate.port,
-                    foundation: event.candidate.foundation
-                };
-
-                this.log('info', '📤 Generated local ICE candidate', candidateInfo);
-
-                if (roomStore.currentRoom) {
-                    try {
-                        await socketStore.emitWithCallback('webrtc-ice-candidate', {
-                            roomId: roomStore.currentRoom.id,
-                            targetParticipantId: participantId,
-                            candidate: event.candidate.toJSON()
-                        });
-
-                        this.log('success', '📡 ICE candidate sent to server', candidateInfo);
-                    } catch (error) {
-                        this.log('error', '💥 Failed to send ICE candidate', {
-                            ...candidateInfo,
-                            error: (error as Error).message
-                        });
-                    }
-                }
-            } else {
-                this.log('info', '🏁 ICE candidate gathering complete', {
-                    participantId,
-                    finalGatheringState: connection.iceGatheringState
-                });
-            }
-        };
-
-        // Enhanced track reception monitoring
-        connection.ontrack = (event) => {
-            this.log('success', '🎬 Received remote media track', {
+            this.log('info', 'ICE gathering state changed', {
                 participantId,
                 userName,
-                trackKind: event.track.kind,
-                trackId: event.track.id,
-                streamId: event.streams[0]?.id,
-                streamCount: event.streams.length,
-                trackSettings: event.track.kind === 'video' ? event.track.getSettings() : undefined
+                gatheringState: connection.iceGatheringState
             });
 
-            runInAction(() => {
-                peerConnection.remoteStream = event.streams[0];
-            });
+            if (connection.iceGatheringState === 'complete') {
+                this.log('info', 'ICE gathering completed', { participantId, userName });
+            }
         };
 
-        // Enhanced signaling state monitoring
-        connection.onsignalingstatechange = () => {
-            this.log('info', '📡 Signaling state changed', {
+        // ICE candidates with detailed logging
+        connection.onicecandidate = (event) => {
+            if (event.candidate) {
+                this.log('info', 'ICE candidate generated', {
+                    participantId,
+                    userName,
+                    candidate: {
+                        type: event.candidate.type,
+                        protocol: event.candidate.protocol,
+                        address: event.candidate.address?.substring(0, 10) + '...' // Partial for privacy
+                    }
+                });
+
+                // Forward ICE candidate to remote peer
+                socketStore.emit('webrtc-ice-candidate', {
+                    roomId: roomStore.currentRoom!.id,
+                    targetParticipantId: participantId,
+                    candidate: event.candidate
+                });
+            } else {
+                this.log('info', 'ICE candidate gathering finished', { participantId, userName });
+            }
+        };
+
+        // Remote stream handling
+        connection.ontrack = (event) => {
+            this.log('success', 'Remote track received', {
                 participantId,
-                newState: connection.signalingState,
-                fullState: logWebRTCStates(participantId, connection, 'signaling-state-change')
+                userName,
+                kind: event.track.kind,
+                streamId: event.streams[0]?.id
             });
+
+            if (event.streams[0]) {
+                runInAction(() => {
+                    peerConnection.remoteStream = event.streams[0];
+                });
+            }
         };
+
+        // Data channel handling
+        connection.ondatachannel = (event) => {
+            this.log('info', 'Data channel received', {
+                participantId,
+                userName,
+                label: event.channel.label
+            });
+
+            event.channel.onopen = () => {
+                this.log('success', 'Data channel opened', { participantId, userName });
+            };
+
+            event.channel.onclose = () => {
+                this.log('info', 'Data channel closed', { participantId, userName });
+            };
+
+            event.channel.onerror = (error) => {
+                this.log('error', 'Data channel error', {
+                    participantId,
+                    userName,
+                    error
+                });
+            };
+        };
+    }
+
+    // New method to handle connection failures with retry logic
+    private handleConnectionFailure(participantId: string, reason: string): void {
+        this.log('warning', 'Handling connection failure', { participantId, reason });
+
+        const peerConnection = this.peerConnections.get(participantId);
+        if (!peerConnection) return;
+
+        // Close the failed connection
+        this.closePeerConnection(participantId);
+
+        // Could implement retry logic here if needed
+        this.log('info', 'Connection cleanup completed', { participantId, reason });
     }
 
     // ========================================================================
@@ -681,6 +741,98 @@ class WebRTCStore {
             clearTimeout(timeout);
             this.connectionTimeouts.delete(participantId);
             this.log('info', '⏰ Cleared connection timeout', { participantId });
+        }
+    }
+
+    @action
+    async runConnectivityTest(): Promise<ConnectivityTestResult> {
+        if (this.isRunningConnectivityTest) {
+            this.log('warning', 'Connectivity test already in progress');
+            return this.connectivityTestResult!;
+        }
+
+        runInAction(() => {
+            this.isRunningConnectivityTest = true;
+            this.connectivityTestResult = null;
+        });
+
+        try {
+            // Use the enhanced diagnostics with network detection
+            const result = await runWebRTCDiagnostics((level, message, data) => {
+                this.log(level as any, message, data);
+            });
+
+            runInAction(() => {
+                this.connectivityTestResult = result;
+                this.isRunningConnectivityTest = false;
+            });
+
+            // Enhanced logging based on network environment
+            if (result.networkEnvironment) {
+                this.log('info', '🌐 Network Environment Analysis', {
+                    type: result.networkEnvironment.type,
+                    natType: result.networkEnvironment.natType,
+                    firewallLevel: result.networkEnvironment.firewallLevel
+                });
+            }
+
+            // Smart status reporting
+            if (result.issueCount === 0) {
+                this.log('success', '🎉 All connectivity tests passed!', {
+                    networkType: result.networkEnvironment?.type || 'unknown',
+                    natType: result.networkEnvironment?.natType || 'unknown'
+                });
+            } else {
+                // Categorize issues by severity and type
+                const criticalIssues = this.categorizeCriticalIssues(result);
+                const networkIssues = this.categorizeNetworkIssues(result);
+
+                this.log('warning', `⚠️ ${result.issueCount} issue(s) detected`, {
+                    criticalIssues,
+                    networkIssues,
+                    networkType: result.networkEnvironment?.type,
+                    totalRecommendations: result.recommendations.length
+                });
+
+                // Log specific guidance based on network environment
+                if (result.networkEnvironment?.type === 'corporate') {
+                    this.log('info', '🏢 Corporate network detected - IT assistance may be required');
+                } else if (result.networkEnvironment?.type === 'mobile') {
+                    this.log('info', '📱 Mobile/Carrier network - TURN servers required');
+                } else if (result.networkEnvironment?.natType === 'symmetric') {
+                    this.log('info', '🔄 Symmetric NAT - relay connections needed');
+                }
+            }
+
+            return result;
+        } catch (error) {
+            this.log('error', 'Connectivity test failed with unexpected error', {
+                error: (error as Error).message
+            });
+
+            const failedResult: ConnectivityTestResult = {
+                mediaAccess: false,
+                stunConnectivity: false,
+                candidateGeneration: false,
+                peerConnectionCreation: false,
+                localOfferGeneration: false,
+                iceGathering: false,
+                issueCount: 1,
+                issues: [`Connectivity test failed: ${(error as Error).message}`],
+                recommendations: [
+                    'Check browser console for detailed error information',
+                    'Try refreshing the page',
+                    'Ensure stable internet connection'
+                ],
+                details: { errors: [(error as Error).message] }
+            };
+
+            runInAction(() => {
+                this.connectivityTestResult = failedResult;
+                this.isRunningConnectivityTest = false;
+            });
+
+            return failedResult;
         }
     }
 
@@ -728,6 +880,7 @@ class WebRTCStore {
         }, delay);
     }
 
+    /**
     private clearRetryAttempts(participantId: string): void {
         const attempt = this.connectionAttempts.get(participantId);
         if (attempt) {
@@ -735,6 +888,7 @@ class WebRTCStore {
             this.log('info', '🧹 Cleared retry attempts', { participantId, attempts: attempt.count });
         }
     }
+        */
 
     // ========================================================================
     // PUBLIC API - MEDIA METHODS
@@ -1213,20 +1367,22 @@ class WebRTCStore {
     }
 
     cleanup(): void {
-        this.log('info', '🧹 Cleaning up WebRTC store');
+        this.log('info', 'Cleaning up WebRTC store');
 
-        this.stopMedia();
-        this.closeAllPeerConnections();
+        try {
+            this.stopMedia();
+            this.closeAllPeerConnections();
 
-        runInAction(() => {
-            this.pendingIceCandidates.clear();
-            this.connectionAttempts.clear();
-            this.connectionInitiators.clear();
-            this.connectionTimeouts.clear();
-            this.mediaError = null;
-        });
+            runInAction(() => {
+                this.mediaError = null;
+                this.connectivityTestResult = null;
+                this.isRunningConnectivityTest = false;
+            });
 
-        this.log('success', '✅ WebRTC store cleanup completed');
+            this.log('success', 'WebRTC store cleanup completed');
+        } catch (error) {
+            this.log('error', 'Error during cleanup', { error: (error as Error).message });
+        }
     }
 
     // ========================================================================
@@ -1297,6 +1453,38 @@ class WebRTCStore {
                 hasRemoteDescription: !!pc.connection.remoteDescription
             }))
         };
+    }
+
+    @computed
+    get connectivitySummary() {
+        if (!this.connectivityTestResult) return null;
+
+        const result = this.connectivityTestResult;
+        return {
+            overallStatus: result.issueCount === 0 ? 'healthy' : 'issues',
+            passedTests: [
+                result.mediaAccess && 'Media Access',
+                result.stunConnectivity && 'STUN Connectivity',
+                result.candidateGeneration && 'ICE Candidates',
+                result.peerConnectionCreation && 'Peer Connection',
+                result.localOfferGeneration && 'Offer Generation',
+                result.iceGathering && 'ICE Gathering'
+            ].filter(Boolean),
+            failedTests: [
+                !result.mediaAccess && 'Media Access',
+                !result.stunConnectivity && 'STUN Connectivity',
+                !result.candidateGeneration && 'ICE Candidates',
+                !result.peerConnectionCreation && 'Peer Connection',
+                !result.localOfferGeneration && 'Offer Generation',
+                !result.iceGathering && 'ICE Gathering'
+            ].filter(Boolean),
+            recommendations: result.recommendations
+        };
+    }
+
+    @computed
+    get canRunConnectivityTest(): boolean {
+        return !this.isRunningConnectivityTest;
     }
 
     // ========================================================================
@@ -1602,6 +1790,39 @@ class WebRTCStore {
                 ]
             });
         }
+    }
+
+    private categorizeCriticalIssues(result: ConnectivityTestResult): string[] {
+        const critical: string[] = [];
+
+        if (!result.mediaAccess) {
+            critical.push('Media access blocked');
+        }
+        if (!result.peerConnectionCreation) {
+            critical.push('WebRTC API unavailable');
+        }
+        if (!result.localOfferGeneration) {
+            critical.push('SDP generation failed');
+        }
+
+        return critical;
+    }
+
+// Helper method to categorize network issues
+    private categorizeNetworkIssues(result: ConnectivityTestResult): string[] {
+        const network: string[] = [];
+
+        if (!result.stunConnectivity) {
+            network.push('STUN servers blocked');
+        }
+        if (!result.candidateGeneration) {
+            network.push('ICE candidate generation failed');
+        }
+        if (!result.iceGathering) {
+            network.push('ICE gathering incomplete');
+        }
+
+        return network;
     }
 }
 
