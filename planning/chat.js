@@ -1,31 +1,6 @@
 // CHAT INTEGRATION GUIDE
 // Follow these steps to add chat to your existing WebRTC application
 
-// In setupEventListeners method, add:
-socketStore.on('chat-message', (data) => {
-    // This will be handled by chat store
-});
-
-socketStore.on('chat-message-edited', (data) => {
-    // This will be handled by chat store
-});
-
-socketStore.on('chat-message-deleted', (data) => {
-    // This will be handled by chat store
-});
-
-socketStore.on('chat-typing', (data) => {
-    // This will be handled by chat store
-});
-
-socketStore.on('chat-history', (data) => {
-    // This will be handled by chat store
-});
-
-// 9. INSTALL DEPENDENCIES
-// Make sure you have uuid for message IDs:
-// npm install uuid @types/uuid
-
 // 10. TESTING
 // After integration, test these features:
 // ✅ Send messages

@@ -7,9 +7,9 @@ import roomStore from './room.store';
 import type {
     ChatMessage,
     ChatParticipant,
-    DeleteMessageRequest,
-    EditMessageRequest,
-    SendMessageRequest, TypingIndicatorRequest
+    DeleteMessageRequest, DeleteMessageResponse,
+    EditMessageRequest, EditMessageResponse,
+    SendMessageRequest, SendMessageResponse, TypingIndicatorRequest
 } from "@/types/chat.types.ts";
 import {LogLevel,LogData, LogEntry} from "@/types/logging.types.ts";
 
@@ -194,7 +194,8 @@ class ChatStore {
                 replyTo
             };
 
-            const response = await socketStore.emitWithCallback('send-message', messageData);
+            // Fix: Use the correct response type that includes the message
+            const response = await socketStore.emitWithCallback<SendMessageResponse>('send-message', messageData);
 
             this.log('success', 'Message sent successfully', { messageId: response.message.id });
 
@@ -224,8 +225,9 @@ class ChatStore {
                 newContent: newContent.trim()
             };
 
-            await socketStore.emitWithCallback('edit-message', editData);
-            this.log('success', 'Message edited successfully', { messageId });
+            // Fix: Use the correct response type
+            const response = await socketStore.emitWithCallback<EditMessageResponse>('edit-message', editData);
+            this.log('success', 'Message edited successfully', { messageId: response.message.id });
 
         } catch (error) {
             this.log('error', 'Failed to edit message', { messageId, error: (error as Error).message });
@@ -248,8 +250,9 @@ class ChatStore {
                 messageId
             };
 
-            await socketStore.emitWithCallback('delete-message', deleteData);
-            this.log('success', 'Message deleted successfully', { messageId });
+            // Fix: Use the correct response type
+            const response = await socketStore.emitWithCallback<DeleteMessageResponse>('delete-message', deleteData);
+            this.log('success', 'Message deleted successfully', { messageId: response.messageId });
 
         } catch (error) {
             this.log('error', 'Failed to delete message', { messageId, error: (error as Error).message });
