@@ -8,9 +8,10 @@ import {
     ReconnectRoomRequest, ReconnectRoomResponse
 } from "@/types/room.types";
 import {
+    AddReactionRequest, AddReactionResponse,
     ChatMessage, DeleteMessageRequest, DeleteMessageResponse,
     EditMessageRequest,
-    EditMessageResponse,
+    EditMessageResponse, MessageReaction, RemoveReactionRequest, RemoveReactionResponse,
     SendMessageRequest,
     SendMessageResponse, TypingIndicatorRequest, TypingIndicatorResponse
 } from "@/types/chat.types";
@@ -24,6 +25,10 @@ export type RoomUpdateEvent = {
     event: 'participant-joined' | 'participant-left' | 'participant-reconnected' | 'participant-disconnected' | 'media-status-changed';
     participant?: Participant;
     leftParticipantId?: string;
+    isConnected?: boolean;
+    isCreator?: boolean;
+    socketId?: string;
+
 }
 
 export type ReconnectionAvailableEvent = {
@@ -54,21 +59,26 @@ interface ClientToServerEvents {
 }
 
 // Server → Client events for chat
-interface ChatServerToClientEvents {
+export interface ChatServerToClientEvents {
     'chat-message': (data: ChatMessage) => void;
     'chat-message-edited': (data: ChatMessage) => void;
     'chat-message-deleted': (data: { roomId: string; messageId: string }) => void;
     'chat-typing': (data: { roomId: string; userId: string; userName: string; isTyping: boolean }) => void;
     'chat-history': (data: { roomId: string; messages: ChatMessage[] }) => void;
+    'chat-reaction-added': (data: { roomId: string; messageId: string; reaction: MessageReaction }) => void;    // NEW
+    'chat-reaction-removed': (data: { roomId: string; messageId: string; emoji: string; userId: string }) => void; // NEW
+    'chat-system-message': (data: ChatMessage) => void;  // NEW
 }
 
 // Client → Server events for chat
-interface ChatClientToServerEvents {
+export interface ChatClientToServerEvents {
     'send-message': (data: SendMessageRequest, callback: (response: ApiResponse<SendMessageResponse>) => void) => void;
     'edit-message': (data: EditMessageRequest, callback: (response: ApiResponse<EditMessageResponse>) => void) => void;
     'delete-message': (data: DeleteMessageRequest, callback: (response: ApiResponse<DeleteMessageResponse>) => void) => void;
     'typing-indicator': (data: TypingIndicatorRequest, callback: (response: ApiResponse<TypingIndicatorResponse>) => void) => void;
     'get-chat-history': (data: { roomId: string }, callback: (response: ApiResponse<{ messages: ChatMessage[] }>) => void) => void;
+    'add-reaction': (data: AddReactionRequest, callback: (response: ApiResponse<AddReactionResponse>) => void) => void;        // NEW
+    'remove-reaction': (data: RemoveReactionRequest, callback: (response: ApiResponse<RemoveReactionResponse>) => void) => void; // NEW
 }
 
 // Extended Socket.IO events (add to existing types)

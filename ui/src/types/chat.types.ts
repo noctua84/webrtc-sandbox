@@ -8,7 +8,9 @@ export interface ChatMessage {
     type: 'text' | 'system' | 'emoji' | 'file';
     edited?: boolean;
     editedAt?: string;
-    replyTo?: string; // Message ID being replied to
+    replyTo?: string;
+    reactions?: MessageReaction[];
+    mentions?: string[];
 }
 
 export interface ChatParticipant {
@@ -19,11 +21,37 @@ export interface ChatParticipant {
     lastSeen: string;
 }
 
+export interface MessageReaction {
+    emoji: string;
+    userIds: string[];
+    count: number;
+}
+
+export type SystemMessageType =
+    | 'participant-joined'
+    | 'participant-left'
+    | 'host-joined'
+    | 'host-left'
+    | 'host-changed'
+    | 'room-created';
+
+export interface SystemMessageData {
+    type: SystemMessageType;
+    userName: string;
+    userId: string;
+    isHost: boolean;
+    metadata?: {
+        previousHost?: string;
+        reason?: string;
+    };
+}
+
 export interface SendMessageRequest {
     roomId: string;
     content: string;
     type?: 'text' | 'emoji' | undefined;
     replyTo?: string | undefined;
+    mentions?: string[] | undefined;  // NEW: Mentioned user IDs
 }
 
 export interface SendMessageResponse {
@@ -59,6 +87,30 @@ export interface DeleteMessageRequest {
 export interface DeleteMessageResponse {
     success: true;
     messageId: string;
+}
+
+export interface AddReactionRequest {
+    roomId: string;
+    messageId: string;
+    emoji: string;
+}
+
+export interface AddReactionResponse {
+    success: true;
+    messageId: string;
+    reaction: MessageReaction;
+}
+
+export interface RemoveReactionRequest {
+    roomId: string;
+    messageId: string;
+    emoji: string;
+}
+
+export interface RemoveReactionResponse {
+    success: true;
+    messageId: string;
+    emoji: string;
 }
 
 // Chat store state

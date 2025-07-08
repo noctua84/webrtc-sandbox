@@ -208,6 +208,9 @@ export interface ServerToClientEvents {
     'chat-message-deleted': (data: { roomId: string; messageId: string }) => void;
     'chat-typing': (data: { roomId: string; userId: string; userName: string; isTyping: boolean }) => void;
     'chat-history': (data: { roomId: string; messages: ChatMessage[] }) => void;
+    'chat-reaction-added': (data: AddReactionResponse) => void;
+    'chat-reaction-removed': (data: RemoveReactionResponse) => void;
+    'chat-system-message': (data: ChatMessage) => void; // For system messages
 }
 
 export interface ClientToServerEvents {
@@ -227,7 +230,8 @@ export interface ClientToServerEvents {
     'delete-message': (data: DeleteMessageRequest, callback: (response: ApiResponse<DeleteMessageResponse>) => void) => void;
     'typing-indicator': (data: TypingIndicatorRequest, callback: (response: ApiResponse<TypingIndicatorResponse>) => void) => void;
     'get-chat-history': (data: { roomId: string }, callback: (response: ApiResponse<{ messages: ChatMessage[] }>) => void) => void;
-
+    'add-reaction': (data: AddReactionRequest, callback: (response: ApiResponse<AddReactionResponse>) => void ) => void;
+    'remove-reaction': (data: RemoveReactionRequest, callback: (response: ApiResponse<RemoveReactionResponse>) => void) => void;
 }
 
 export interface InterServerEvents {
@@ -265,6 +269,8 @@ export interface ChatMessage {
     edited?: boolean | undefined;
     editedAt?: string | undefined;
     replyTo?: string | undefined;
+    mentions?: string[] | undefined;
+    reactions?: MessageReaction[] | undefined;
 }
 
 export interface SendMessageRequest {
@@ -272,6 +278,7 @@ export interface SendMessageRequest {
     content: string;
     type?: 'text' | 'emoji';
     replyTo?: string;
+    mentions?: string[];
 }
 
 export interface SendMessageResponse {
@@ -308,3 +315,44 @@ export interface TypingIndicatorRequest {
 export interface TypingIndicatorResponse {
     success: true;
 }
+
+export interface MessageReaction {
+    emoji: string;
+    userIds: string[];
+    count: number; // Number of users who reacted with this emoji
+}
+
+export type AddReactionRequest = {
+    roomId: string;
+    messageId: string;
+    emoji: string;
+}
+
+export type AddReactionResponse = {
+    success: true;
+    messageId: string;
+    reaction: MessageReaction;
+}
+
+export type RemoveReactionRequest = {
+    roomId: string;
+    messageId: string;
+    emoji: string;
+    userId: string;
+}
+
+export type RemoveReactionResponse = {
+    success: true;
+    messageId: string;
+    emoji: string;
+}
+
+export type SystemMessageType =
+    'participant-joined' |
+    'participant-left' |
+    'host-joined' |
+    'host-left' |
+    'host-changed' |
+    'room-created' |
+    'room-updated';
+

@@ -19,7 +19,7 @@ const RoomForm: React.FC = observer(() => {
         }
 
         try {
-            await roomStore.createRoom(userName.trim(), roomId.trim() || undefined);
+            await roomStore.createRoom({ userName: userName.trim(), roomId: roomId.trim() || undefined });
         } catch (error) {
             console.error('Error creating room:', error);
         }
@@ -33,7 +33,7 @@ const RoomForm: React.FC = observer(() => {
         }
 
         try {
-            await roomStore.joinRoom(roomId.trim(), userName.trim());
+            await roomStore.joinRoom({ roomId: roomId.trim(), userName: userName.trim() });
         } catch (error) {
             console.error('Error joining room:', error);
         }

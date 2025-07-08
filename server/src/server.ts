@@ -32,9 +32,10 @@ import {handleDisconnect} from "./handler/connection.handler";
 import {log} from "./logging";
 import {getEnvironmentConfig, ROOM_CONFIG, SERVER_CONFIG} from "./config";
 import {
+    handleAddReaction,
     handleDeleteMessage,
     handleEditMessage,
-    handleGetChatHistory,
+    handleGetChatHistory, handleRemoveReaction,
     handleSendMessage,
     handleTypingIndicator
 } from "./handler/chat.handler";
@@ -176,6 +177,27 @@ io.on('connection', (socket) => {
 
     socket.on('get-chat-history', (data, callback) => {
         handleGetChatHistory(socket, manager, data, callback);
+    });
+
+    socket.on('add-reaction', (data, callback) => {
+        log('info', `Received chat reaction added`, {
+            socketId: socket.id,
+            roomId: data.roomId,
+            messageId: data.messageId,
+            emoji: data.emoji
+        });
+        // Handle chat reaction added logic here
+        handleAddReaction(socket, manager, io, data, callback);
+    })
+
+    socket.on('remove-reaction', (data, callback) => {
+        log('info', `Received chat reaction removed`, {
+            socketId: socket.id,
+            roomId: data.roomId,
+            messageId: data.messageId,
+            emoji: data.emoji
+        });
+        handleRemoveReaction(socket, manager, io, data, callback);
     });
 });
 

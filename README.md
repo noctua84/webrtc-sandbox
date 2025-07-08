@@ -1,6 +1,6 @@
 # WebRTC Video Streaming System
 
-A WebRTC-based video streaming system built as a monorepo with React frontend and Node.js signaling server. This is a learning-focused implementation with extensive logging and error handling to understand WebRTC concepts.
+A WebRTC-based video streaming system built as a monorepo with React frontend and Node.js signaling server. This is a sandbox-focused implementation with extensive logging and error handling to understand WebRTC concepts and implement different aspects with extensive tooling.
 
 ## Project Structure
 
@@ -32,13 +32,14 @@ webrtc-streaming-monorepo/
 - ✅ **Error Handling**: Robust error detection and user feedback
 - ✅ **React UI**: Modern React app with Tailwind CSS styling
 - ✅ **State Management**: MobX for reactive state management
+- ✅ **WebRTC Peer Connections**: Direct peer-to-peer connections
+- ✅ **Video Streaming**: Actual video capture and streaming
+- ✅ **Audio Support**: Voice communication
+- ✅ **Screen Sharing**: Desktop/application sharing
+- ✅ **Chat**: Text messaging during video calls
 
 ### Planned Features (Future Phases)
-- 🔄 **WebRTC Peer Connections**: Direct peer-to-peer connections
-- 🔄 **Video Streaming**: Actual video capture and streaming
-- 🔄 **Audio Support**: Voice communication
-- 🔄 **Screen Sharing**: Desktop/application sharing
-- 🔄 **Chat**: Text messaging during video calls
+
 - 🔄 **Recording**: Session recording capabilities
 
 ## Quick Start
@@ -189,7 +190,10 @@ This implementation provides the foundation for WebRTC video streaming. Future d
 
 ## Contributing
 
-This is a learning project focused on understanding WebRTC concepts. The code is heavily commented and logged to facilitate learning and debugging.
+This is a sandbox project focused on understanding WebRTC concepts. The code is heavily commented and logged to facilitate learning and debugging.
+Feel free to experiment, report issues, or suggest improvements. Contributions are welcome!
+
+But please note that this is not a production-ready system and is intended for exploring webrtc, video streaming and chat systems.
 
 ## License
 

@@ -1,19 +1,23 @@
-import { makeAutoObservable, runInAction } from 'mobx';
+import {makeAutoObservable, runInAction} from 'mobx';
 import socketStore from './socket.store';
 import {
-    CreateRoomRequest,
     CreateRoomResponse,
-    JoinRoomRequest,
     JoinRoomResponse,
     ReconnectRoomRequest,
     ReconnectRoomResponse,
     GetRoomInfoRequest,
     GetRoomInfoResponse, Room, RoomStatus,
 } from '../types/room.types';
+import type { CreateRoomRequest, JoinRoomRequest } from '@/types/room.types';
 import {ReconnectionData} from "@/types/connection.types.ts";
 import {LogData, LogEntry, LogLevel} from "@/types/logging.types.ts";
 import {Participant} from "@/types/participant.types.ts";
 import {ReconnectionAvailableEvent, RoomUpdateEvent} from "@/types/event.types.ts";
+import chatStore from "@/stores/chat.store.ts";
+
+
+const RECONNECTION_STORAGE_KEY = 'webrtc-reconnection-data';
+const RECONNECTION_EXPIRY_MS = 5 * 60 * 1000;
 
 // ============================================================================
 // UTILITY FUNCTIONS
@@ -29,7 +33,7 @@ const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEn
 
 const getStoredReconnectionData = (): ReconnectionData | null => {
     try {
-        const stored = localStorage.getItem('webrtc-reconnection-data');
+        const stored = localStorage.getItem(RECONNECTION_STORAGE_KEY);
         if (!stored) return null;
 
         const data: ReconnectionData = JSON.parse(stored);
@@ -37,28 +41,28 @@ const getStoredReconnectionData = (): ReconnectionData | null => {
         const age = now - data.timestamp;
 
         // Expire after 5 minutes
-        if (age > 5 * 60 * 1000) {
-            localStorage.removeItem('webrtc-reconnection-data');
+        if (age > RECONNECTION_EXPIRY_MS) {
+            localStorage.removeItem(RECONNECTION_STORAGE_KEY);
             return null;
         }
 
         return data;
     } catch (error) {
-        localStorage.removeItem('webrtc-reconnection-data');
+        localStorage.removeItem(RECONNECTION_STORAGE_KEY);
         return null;
     }
 };
 
 const storeReconnectionData = (data: ReconnectionData): void => {
     try {
-        localStorage.setItem('webrtc-reconnection-data', JSON.stringify(data));
+        localStorage.setItem(RECONNECTION_STORAGE_KEY, JSON.stringify(data));
     } catch (error) {
         console.warn('Failed to store reconnection data:', error);
     }
 };
 
 const clearReconnectionData = (): void => {
-    localStorage.removeItem('webrtc-reconnection-data');
+    localStorage.removeItem(RECONNECTION_STORAGE_KEY);
 };
 
 // ============================================================================
@@ -96,7 +100,7 @@ const createLogger = (logs: LogEntry[]) => ({
 // ============================================================================
 
 const handleWebRTCIntegration = async (
-    event: 'participant-joined' | 'participant-reconnected',
+    event: 'participant-joined' | 'participant-reconnected' | 'participant-left',
     participant: Participant,
     currentParticipant: Participant | null,
     logger: ReturnType<typeof createLogger>
@@ -149,7 +153,9 @@ class RoomStore {
     private reconnectionTimeoutId: number | null = null;
 
     // Functional managers
-    private logger: ReturnType<typeof createLogger>;
+    private readonly logger: ReturnType<typeof createLogger>;
+    isCreatingRoom: boolean | undefined;
+    isJoiningRoom: boolean | undefined;
 
     constructor() {
         makeAutoObservable(this, {
@@ -168,6 +174,28 @@ class RoomStore {
     }
 
     // ========================================================================
+    // localStorage management for reconnection data
+    // ========================================================================
+    private saveReconnectionData(roomId: string, reconnectionToken: string, userName: string): void {
+        const reconnectionData: ReconnectionData = {
+            roomId,
+            reconnectionToken,
+            userName,
+            timestamp: Date.now()
+        };
+        storeReconnectionData(reconnectionData);
+
+        // Clear any existing timeout
+        this.clearReconnectionTimeout();
+
+        // Set a timeout to clear reconnection data after 5 minutes
+        this.reconnectionTimeoutId = window.setTimeout(() => {
+            clearReconnectionData();
+            this.reconnectionTimeoutId = null;
+        }, RECONNECTION_EXPIRY_MS);
+    }
+
+    // ========================================================================
     // SOCKET EVENT HANDLERS
     // ========================================================================
 
@@ -181,99 +209,120 @@ class RoomStore {
     }
 
     private async handleRoomUpdate(data: RoomUpdateEvent): Promise<void> {
-        this.logger.log('info', 'Room update received', {
-            event: data.event,
-            roomId: data.roomId,
-            participantCount: data.participants?.length
-        });
+        this.logger.log('info', 'Received room update', data);
 
-        if (!this.currentRoom || this.currentRoom.id !== data.roomId) {
-            this.logger.log('warning', 'Received room update for different room', {
-                currentRoomId: this.currentRoom?.id,
-                updateRoomId: data.roomId
-            });
-            return;
-        }
+        // Store previous participants for comparison
+        const previousParticipants = [...this.participants];
 
         runInAction(() => {
-            this.participants = data.participants || [];
+            if (data.participants) {
+                this.participants = data.participants;
+                this.logger.log('info', 'Updated participants list', {
+                    count: this.participants.length,
+                    connectedCount: this.participants.filter(p => p.isConnected).length,
+                    participants: this.participants.map(p => ({
+                        socketId: p.socketId,
+                        userName: p.userName,
+                        isCreator: p.isCreator,
+                        isConnected: p.isConnected
+                    }))
+                });
+            }
         });
 
-        // Handle specific events with WebRTC integration
+        // Handle specific events and create system messages
         switch (data.event) {
             case 'participant-joined':
                 if (data.participant) {
-                    this.logger.log('success', 'Participant joined the room', {
+                    this.logger.log('success', 'New participant joined the room', {
                         participant: data.participant,
                         totalParticipants: data.participants?.length
                     });
 
-                    // CRITICAL FIX: Establish bidirectional connections
+                    // Handle WebRTC integration for new participant
                     await handleWebRTCIntegration(
                         'participant-joined',
                         data.participant,
                         this.currentParticipant,
                         this.logger
                     );
-                }
-                break;
 
-            case 'participant-reconnected':
-                if (data.participant) {
-                    this.logger.log('success', 'Participant reconnected to the room', {
-                        participant: data.participant,
-                        totalParticipants: data.participants?.length
-                    });
-
-                    // CRITICAL FIX: Re-establish connections for reconnected participants
-                    await handleWebRTCIntegration(
-                        'participant-reconnected',
-                        data.participant,
-                        this.currentParticipant,
-                        this.logger
+                    // NEW: Create system message for join
+                    chatStore.generateSystemMessage(
+                        data.participant.isCreator ? 'host-joined' : 'participant-joined',
+                        data.participant.userName
                     );
                 }
                 break;
 
             case 'participant-left':
                 if (data.leftParticipantId) {
-                    this.logger.log('info', 'Participant left the room', {
-                        leftParticipantId: data.leftParticipantId,
-                        totalParticipants: data.participants?.length
-                    });
+                    // Find the participant who left from previous state
+                    const leftParticipant = previousParticipants.find(p => p.socketId === data.leftParticipantId);
 
-                    // Clean up WebRTC connections
-                    try {
-                        const { default: webrtcStore } = await import('./webrtc.store');
-                        webrtcStore.closePeerConnection(data.leftParticipantId);
-                    } catch (error) {
-                        this.logger.log('error', 'Failed to cleanup WebRTC connection for left participant', {
-                            error: (error as Error).message,
-                            participantId: data.leftParticipantId
+                    if (leftParticipant) {
+                        this.logger.log('info', 'Participant left the room', {
+                            participant: leftParticipant,
+                            totalParticipants: data.participants?.length
                         });
+
+                        // Handle WebRTC integration for left participant
+                        await handleWebRTCIntegration(
+                            'participant-left',
+                            leftParticipant,
+                            this.currentParticipant,
+                            this.logger
+                        );
+
+                        // NEW: Create system message for leave
+                        chatStore.generateSystemMessage(
+                            leftParticipant.isCreator ? 'host-left' : 'participant-left',
+                            leftParticipant.userName
+                        );
                     }
                 }
                 break;
 
             case 'participant-disconnected':
                 if (data.leftParticipantId) {
-                    this.logger.log('warning', 'Participant disconnected from the room', {
-                        leftParticipantId: data.leftParticipantId,
-                        totalParticipants: data.participants?.length
-                    });
+                    const disconnectedParticipant = previousParticipants.find(p => p.socketId === data.leftParticipantId);
+
+                    if (disconnectedParticipant) {
+                        this.logger.log('warning', 'Participant disconnected from room', {
+                            participant: disconnectedParticipant,
+                            totalParticipants: data.participants?.length
+                        });
+
+                        // Don't create system message for disconnections (they might reconnect)
+                        // Only create leave message if they're fully removed
+                    }
                 }
                 break;
 
-            case 'media-status-changed':
+            case 'participant-reconnected':
                 if (data.participant) {
-                    this.logger.log('info', 'Participant media status changed', {
+                    this.logger.log('success', 'Participant reconnected to room', {
                         participant: data.participant,
-                        mediaStatus: data.participant.mediaStatus
+                        totalParticipants: data.participants?.length
                     });
+
+                    // Handle WebRTC integration for reconnected participant
+                    await handleWebRTCIntegration(
+                        'participant-reconnected',
+                        data.participant,
+                        this.currentParticipant,
+                        this.logger
+                    );
+
+                    // Don't create join message for reconnections
                 }
                 break;
+
+            default:
+                this.logger.log('info', 'Room update event', { event: data.event });
         }
     }
+
 
     private handleReconnectionAvailable(data: ReconnectionAvailableEvent): void {
         this.logger.log('info', 'Reconnection available', {
@@ -283,31 +332,24 @@ class RoomStore {
 
         // Store reconnection data
         if (this.currentParticipant) {
-            const reconnectionData: ReconnectionData = {
-                roomId: data.roomId,
-                reconnectionToken: this.currentParticipant.reconnectionToken || '',
-                userName: this.currentParticipant.userName,
-                timestamp: Date.now()
-            };
-            storeReconnectionData(reconnectionData);
+            const roomId = data.roomId;
+            const reconnectionToken = this.currentParticipant.reconnectionToken || '';
+            const userName = this.currentParticipant.userName || 'Unknown User';
+
+            this.saveReconnectionData(roomId, reconnectionToken, userName);
         }
     }
 
     // ========================================================================
     // PUBLIC API METHODS
     // ========================================================================
-
-    async createRoom(userName: string, roomId?: string): Promise<void> {
-        if (!userName.trim()) {
-            throw new Error('Username is required');
-        }
-
-        this.logger.log('info', 'Creating room', { userName, roomId });
-
+    async createRoom({userName, roomId}: CreateRoomRequest): Promise<CreateRoomResponse> {
         runInAction(() => {
             this.roomStatus = 'creating';
             this.roomError = null;
         });
+
+        this.logger.log('info', 'Creating room', { userName, roomId });
 
         try {
             const request: CreateRoomRequest = {
@@ -337,15 +379,16 @@ class RoomStore {
                 this.roomStatus = 'in-room';
             });
 
-            // Store reconnection data
-            const reconnectionData: ReconnectionData = {
+            this.logger.log('success', 'Room created successfully', {
                 roomId: response.room.id,
                 reconnectionToken: response.reconnectionToken,
                 userName: response.participant.userName,
                 timestamp: Date.now()
-            };
-            storeReconnectionData(reconnectionData);
+            });
 
+            this.saveReconnectionData(response.room.id, response.reconnectionToken, response.participant.userName);
+
+            return response;
         } catch (error) {
             const errorMessage = (error as Error).message;
             this.logger.log('error', 'Failed to create room', { error: errorMessage });
@@ -359,7 +402,7 @@ class RoomStore {
         }
     }
 
-    async joinRoom(roomId: string, userName: string): Promise<void> {
+    async joinRoom({roomId, userName}: JoinRoomRequest ): Promise<void> {
         if (!roomId.trim() || !userName.trim()) {
             throw new Error('Room ID and username are required');
         }
@@ -367,7 +410,6 @@ class RoomStore {
         this.logger.log('info', 'Joining room', { roomId, userName });
 
         runInAction(() => {
-            this.roomStatus = 'joining';
             this.roomError = null;
         });
 
@@ -393,19 +435,12 @@ class RoomStore {
                 this.currentRoom = response.room;
                 this.currentParticipant = response.participant;
                 this.participants = response.participants;
+                this.isJoiningRoom = false;
                 this.roomStatus = 'in-room';
             });
 
-            // Store reconnection data
-            const reconnectionData: ReconnectionData = {
-                roomId: response.room.id,
-                reconnectionToken: response.reconnectionToken,
-                userName: response.participant.userName,
-                timestamp: Date.now()
-            };
-            storeReconnectionData(reconnectionData);
+            this.saveReconnectionData(response.room.id, response.reconnectionToken, response.participant.userName);
 
-            // CRITICAL FIX: Connect to all existing participants immediately if media is active
             try {
                 const { default: webrtcStore } = await import('./webrtc.store');
                 if (webrtcStore.isMediaActive) {
@@ -487,8 +522,8 @@ class RoomStore {
         });
 
         // Auto-attempt reconnection after a short delay
-        setTimeout(() => {
-            this.attemptReconnection(reconnectionData);
+        setTimeout(async () => {
+            await this.attemptReconnection(reconnectionData);
         }, 1000);
     }
 
@@ -620,6 +655,14 @@ class RoomStore {
 
     get hasError(): boolean {
         return this.roomStatus === 'error' && !!this.roomError;
+    }
+
+    clearError() {
+        runInAction(() => {
+            this.roomError = null;
+            this.roomStatus = 'idle';
+        });
+        this.logger.log('info', 'Room error cleared');
     }
 }
 

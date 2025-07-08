@@ -5,13 +5,15 @@ import socketStore from './socket.store';
 import roomStore from './room.store';
 
 import type {
+    AddReactionRequest,
     ChatMessage,
     ChatParticipant,
     DeleteMessageRequest, DeleteMessageResponse,
-    EditMessageRequest, EditMessageResponse,
-    SendMessageRequest, SendMessageResponse, TypingIndicatorRequest
+    EditMessageRequest, EditMessageResponse, MessageReaction, RemoveReactionRequest,
+    SendMessageRequest, SendMessageResponse, SystemMessageType, TypingIndicatorRequest
 } from "@/types/chat.types.ts";
 import {LogLevel,LogData, LogEntry} from "@/types/logging.types.ts";
+import {createSystemMessage, parseMentions} from "@/helper/chat.helper.ts";
 
 class ChatStore {
     @observable messages: ChatMessage[] = [];
@@ -76,6 +78,21 @@ class ChatStore {
         // Handle typing indicators
         socketStore.on('chat-typing', (data: { roomId: string; userId: string; userName: string; isTyping: boolean }) => {
             this.handleTypingIndicator(data);
+        });
+
+        // Handle reaction added
+        socketStore.on('chat-reaction-added', (data: { roomId: string; messageId: string; reaction: MessageReaction }) => {
+            this.handleReactionAdded(data);
+        });
+
+        // Handle reaction removed
+        socketStore.on('chat-reaction-removed', (data: { roomId: string; messageId: string; emoji: string; userId: string }) => {
+            this.handleReactionRemoved(data);
+        });
+
+        // Handle system messages
+        socketStore.on('chat-system-message', (message: ChatMessage) => {
+            this.handleSystemMessage(message);
         });
 
         this.log('info', 'Chat socket listeners configured');
@@ -156,6 +173,74 @@ class ChatStore {
         }
     }
 
+    // NEW: Handle reaction added
+    @action
+    private handleReactionAdded(data: { roomId: string; messageId: string; reaction: MessageReaction }): void {
+        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return;
+
+        this.log('info', 'Reaction added', { messageId: data.messageId, emoji: data.reaction.emoji });
+
+        runInAction(() => {
+            const message = this.messages.find(m => m.id === data.messageId);
+            if (message) {
+                if (!message.reactions) message.reactions = [];
+
+                const existingReaction = message.reactions.find(r => r.emoji === data.reaction.emoji);
+                if (existingReaction) {
+                    // Update existing reaction
+                    Object.assign(existingReaction, data.reaction);
+                } else {
+                    // Add new reaction
+                    message.reactions.push(data.reaction);
+                }
+            }
+        });
+    }
+
+    // Handle reaction removed
+    @action
+    private handleReactionRemoved(data: { roomId: string; messageId: string; emoji: string; userId: string }): void {
+        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return;
+
+        this.log('info', 'Reaction removed', { messageId: data.messageId, emoji: data.emoji });
+
+        runInAction(() => {
+            const message = this.messages.find(m => m.id === data.messageId);
+            if (message && message.reactions) {
+                const reaction = message.reactions.find(r => r.emoji === data.emoji);
+                if (reaction) {
+                    // Remove user from reaction
+                    reaction.userIds = reaction.userIds.filter(id => id !== data.userId);
+                    reaction.count = reaction.userIds.length;
+
+                    // Remove reaction if no users left
+                    if (reaction.count === 0) {
+                        message.reactions = message.reactions.filter(r => r.emoji !== data.emoji);
+                    }
+                }
+            }
+        });
+    }
+
+    // Handle system messages
+    @action
+    private handleSystemMessage(message: ChatMessage): void {
+        if (!roomStore.currentRoom || message.roomId !== roomStore.currentRoom.id) return;
+
+        this.log('info', 'Received system message', {
+            messageId: message.id,
+            content: message.content
+        });
+
+        runInAction(() => {
+            this.messages.push(message);
+
+            // Keep only last 200 messages
+            if (this.messages.length > 200) {
+                this.messages = this.messages.slice(-200);
+            }
+        });
+    }
     // Send a message
     @action
     async sendMessage(content: string, type: 'text' | 'emoji' = 'text', replyTo?: string): Promise<void> {
@@ -170,22 +255,58 @@ class ChatStore {
         this.log('info', 'Sending message', { type, contentLength: content.length, replyTo });
 
         try {
+            // Parse mentions from content
+            const mentions = parseMentions(content, roomStore.participants);
+
             const messageData: SendMessageRequest = {
                 roomId: roomStore.currentRoom.id,
                 content: content.trim(),
                 type,
-                replyTo
+                replyTo,
+                mentions // Include parsed mentions
             };
 
-            // Fix: Use the correct response type that includes the message
             const response = await socketStore.emitWithCallback<SendMessageResponse>('send-message', messageData);
 
-            this.log('success', 'Message sent successfully', { messageId: response.message.id });
+            this.log('success', 'Message sent successfully', {
+                messageId: response.message.id,
+                mentionCount: mentions.length
+            });
 
         } catch (error) {
             this.log('error', 'Failed to send message', { error: (error as Error).message });
             throw error;
         }
+    }
+
+    // Create and send system message (called by room events)
+    @action
+    generateSystemMessage(
+        type: SystemMessageType,
+        userName: string,
+    ): void {
+        if (!roomStore.currentRoom) return;
+
+        const systemMessage = createSystemMessage(
+            roomStore.currentRoom.id,
+            type,
+            userName,
+        );
+
+        this.log('info', 'Creating system message', {
+            type,
+            userName,
+            content: systemMessage.content,
+        });
+
+        runInAction(() => {
+            this.messages.push(systemMessage);
+
+            // Keep only last 200 messages
+            if (this.messages.length > 200) {
+                this.messages = this.messages.slice(-200);
+            }
+        });
     }
 
     // Edit a message
@@ -352,6 +473,56 @@ class ChatStore {
         });
     }
 
+    // Add reaction to message
+    @action
+    async addReaction(messageId: string, emoji: string): Promise<void> {
+        if (!roomStore.currentRoom) {
+            throw new Error('Not in a room');
+        }
+
+        this.log('info', 'Adding reaction', { messageId, emoji });
+
+        try {
+            const reactionData: AddReactionRequest = {
+                roomId: roomStore.currentRoom.id,
+                messageId,
+                emoji
+            };
+
+            await socketStore.emitWithCallback('add-reaction', reactionData);
+            this.log('success', 'Reaction added successfully', { messageId, emoji });
+
+        } catch (error) {
+            this.log('error', 'Failed to add reaction', { messageId, emoji, error: (error as Error).message });
+            throw error;
+        }
+    }
+
+    // Remove reaction from message
+    @action
+    async removeReaction(messageId: string, emoji: string): Promise<void> {
+        if (!roomStore.currentRoom) {
+            throw new Error('Not in a room');
+        }
+
+        this.log('info', 'Removing reaction', { messageId, emoji });
+
+        try {
+            const reactionData: RemoveReactionRequest = {
+                roomId: roomStore.currentRoom.id,
+                messageId,
+                emoji
+            };
+
+            await socketStore.emitWithCallback('remove-reaction', reactionData);
+            this.log('success', 'Reaction removed successfully', { messageId, emoji });
+
+        } catch (error) {
+            this.log('error', 'Failed to remove reaction', { messageId, emoji, error: (error as Error).message });
+            throw error;
+        }
+    }
+
     // Computed properties
     @computed
     get messageCount(): number {
@@ -381,6 +552,21 @@ class ChatStore {
         return roomStore.isInRoom && !this.isLoading;
     }
 
+    @computed
+    get shouldShowLoading(): boolean {
+        return this.isLoading && this.messages.length === 0;
+    }
+
+    @computed
+    get mentionNotifications(): ChatMessage[] {
+        if (!roomStore.currentParticipant) return [];
+
+        return this.messages.filter(message =>
+            message.mentions?.includes(roomStore.currentParticipant!.socketId) &&
+            message.senderId !== roomStore.currentParticipant!.socketId
+        );
+    }
+
     // Get messages from specific user
     getMessagesByUser(userId: string): ChatMessage[] {
         return this.messages.filter(m => m.senderId === userId);
@@ -396,9 +582,16 @@ class ChatStore {
         return message.senderId === roomStore.currentParticipant?.socketId;
     }
 
-    @computed
-    get shouldShowLoading(): boolean {
-        return this.isLoading && this.messages.length === 0;
+    hasUserReacted(message: ChatMessage, emoji: string): boolean {
+        if (!message.reactions || !roomStore.currentParticipant) return false;
+
+        const reaction = message.reactions.find(r => r.emoji === emoji);
+        return reaction ? reaction.userIds.includes(roomStore.currentParticipant.socketId) : false;
+    }
+
+    isMentioned(message: ChatMessage): boolean {
+        if (!roomStore.currentParticipant) return false;
+        return message.mentions?.includes(roomStore.currentParticipant.socketId) || false;
     }
 }
 

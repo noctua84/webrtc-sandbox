@@ -14,9 +14,9 @@ export interface Room {
 }
 
 export interface CreateRoomRequest {
-    roomId?: string;
+    roomId?: string | undefined;
     userName: string;
-    reconnectionToken?: string;
+    reconnectionToken?: string | undefined;
 }
 
 export interface JoinRoomRequest {

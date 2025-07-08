@@ -11,11 +11,17 @@ import TypingIndicator from './TypingIndicator';
 const ChatComponent: React.FC = observer(() => {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
+    const messagesContainerRef = useRef<HTMLDivElement>(null);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to bottom when new messages arrive
     useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (messagesContainerRef.current) {
+            messagesContainerRef.current.scrollTo({
+                top: messagesContainerRef.current.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
     }, [chatStore.messages.length]);
 
     // Load chat history when joining a room - FIXED VERSION

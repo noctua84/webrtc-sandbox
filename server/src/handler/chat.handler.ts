@@ -13,7 +13,13 @@ import type {
     DeleteMessageResponse,
     TypingIndicatorRequest,
     TypingIndicatorResponse,
-    ChatMessage
+    ChatMessage,
+    MessageReaction,
+    RemoveReactionResponse,
+    RemoveReactionRequest,
+    AddReactionResponse,
+    AddReactionRequest,
+    SystemMessageType
 } from '../types';
 import { RoomManager } from '../roomManager';
 
@@ -29,29 +35,25 @@ class MessageStorage {
         const roomMessages = this.messages.get(message.roomId)!;
         roomMessages.push(message);
 
-        // Keep only last 200 messages per room
         if (roomMessages.length > 200) {
             this.messages.set(message.roomId, roomMessages.slice(-200));
         }
 
-        // Debug log
         log('info', 'Message added to storage', {
             roomId: message.roomId,
             messageId: message.id,
-            totalMessages: roomMessages.length
+            totalMessages: roomMessages.length,
+            type: message.type,
+            mentionCount: message.mentions?.length || 0
         });
     }
 
     getMessages(roomId: string): ChatMessage[] {
         const messages = this.messages.get(roomId) || [];
-
-        // Debug log
         log('info', 'Messages retrieved from storage', {
             roomId,
-            messageCount: messages.length,
-            hasMessages: messages.length > 0
+            messageCount: messages.length
         });
-
         return messages;
     }
 
@@ -65,7 +67,7 @@ class MessageStorage {
         const message = messages[messageIndex];
 
         if (message === undefined || message === null) {
-            log('error', 'Attempted to update a message that does not exist', { roomId, messageId });
+            log('error', 'Message not found for update', { roomId, messageId });
             return null;
         }
 
@@ -74,6 +76,59 @@ class MessageStorage {
         message.editedAt = new Date().toISOString();
 
         return message;
+    }
+
+    // Add reaction to message
+    addReaction(roomId: string, messageId: string, emoji: string, userId: string): MessageReaction | null {
+        const messages = this.messages.get(roomId);
+        if (!messages) return null;
+
+        const message = messages.find(m => m.id === messageId);
+        if (!message) return null;
+
+        if (!message.reactions) message.reactions = [];
+
+        let reaction = message.reactions.find(r => r.emoji === emoji);
+        if (reaction) {
+            // Add user to existing reaction if not already there
+            if (!reaction.userIds.includes(userId)) {
+                reaction.userIds.push(userId);
+                reaction.count = reaction.userIds.length;
+            }
+        } else {
+            // Create new reaction
+            reaction = {
+                emoji,
+                userIds: [userId],
+                count: 1
+            };
+            message.reactions.push(reaction);
+        }
+
+        return reaction;
+    }
+
+    // Remove reaction from message
+    removeReaction(roomId: string, messageId: string, emoji: string, userId: string): boolean {
+        const messages = this.messages.get(roomId);
+        if (!messages) return false;
+
+        const message = messages.find(m => m.id === messageId);
+        if (!message || !message.reactions) return false;
+
+        const reaction = message.reactions.find(r => r.emoji === emoji);
+        if (!reaction) return false;
+
+        // Remove user from reaction
+        reaction.userIds = reaction.userIds.filter(id => id !== userId);
+        reaction.count = reaction.userIds.length;
+
+        // Remove reaction if no users left
+        if (reaction.count === 0) {
+            message.reactions = message.reactions.filter(r => r.emoji !== emoji);
+        }
+
+        return true;
     }
 
     deleteMessage(roomId: string, messageId: string): boolean {
@@ -105,11 +160,12 @@ export const handleSendMessage = (
         socketId: socket.id,
         roomId: data.roomId,
         contentLength: data.content?.length,
-        type: data.type
+        type: data.type,
+        mentionCount: data.mentions?.length || 0
     });
 
     try {
-        const { roomId, content, type = 'text', replyTo } = data;
+        const { roomId, content, type = 'text', replyTo, mentions = [] } = data;
 
         // Validate input
         if (!roomId || !content || content.trim().length === 0) {
@@ -121,7 +177,6 @@ export const handleSendMessage = (
             return callback(response);
         }
 
-        // Validate message length
         if (content.trim().length > 1000) {
             log('error', 'Message too long', { socketId: socket.id, roomId, length: content.length });
             const response: ErrorResponse = {
@@ -131,14 +186,9 @@ export const handleSendMessage = (
             return callback(response);
         }
 
-        // Validate that sender is in the room
+        // Validate room membership
         const senderRoomId = manager.getRoomBySocketId(socket.id);
         if (senderRoomId !== roomId) {
-            log('error', 'Message from participant not in room', {
-                socketId: socket.id,
-                senderRoomId,
-                requestedRoomId: roomId
-            });
             const response: ErrorResponse = {
                 success: false,
                 error: 'You are not in this room'
@@ -146,10 +196,8 @@ export const handleSendMessage = (
             return callback(response);
         }
 
-        // Get room and sender info
         const room = manager.getRoomById(roomId);
         if (!room) {
-            log('error', 'Room not found for message', { roomId, socketId: socket.id });
             const response: ErrorResponse = {
                 success: false,
                 error: 'Room not found'
@@ -159,7 +207,6 @@ export const handleSendMessage = (
 
         const sender = room.participants.get(socket.id);
         if (!sender) {
-            log('error', 'Sender not found in room participants', { roomId, socketId: socket.id });
             const response: ErrorResponse = {
                 success: false,
                 error: 'Sender not found in room'
@@ -167,7 +214,7 @@ export const handleSendMessage = (
             return callback(response);
         }
 
-        // Create message
+        // Create message with mentions
         const message: ChatMessage = {
             id: uuidv4(),
             roomId,
@@ -176,27 +223,28 @@ export const handleSendMessage = (
             content: content.trim(),
             timestamp: new Date().toISOString(),
             type,
-            replyTo
+            replyTo,
+            mentions,
+            reactions: []
         };
 
-        // Store message
         messageStorage.addMessage(message);
 
         log('success', 'Message created and stored', {
             messageId: message.id,
             roomId,
             sender: message.senderName,
-            type: message.type
+            type: message.type,
+            mentionCount: mentions.length
         });
 
-        // Send response to sender
         const response: SendMessageResponse = {
             success: true,
             message
         };
         callback(response);
 
-        // Broadcast message to all participants in the room
+        // Broadcast message to all participants
         io.to(roomId).emit('chat-message', message);
 
         log('success', 'Message broadcasted to room', {
@@ -559,6 +607,218 @@ export const handleGetChatHistory = (
         };
         callback(response);
     }
+};
+
+// Add reaction handler
+export const handleAddReaction = (
+    socket: Socket,
+    manager: RoomManager,
+    io: Server,
+    data: AddReactionRequest,
+    callback: (response: any) => void
+) => {
+    log('info', 'Received add-reaction request', {
+        socketId: socket.id,
+        roomId: data.roomId,
+        messageId: data.messageId,
+        emoji: data.emoji
+    });
+
+    try {
+        const { roomId, messageId, emoji } = data;
+
+        // Validate input
+        if (!roomId || !messageId || !emoji) {
+            const response: ErrorResponse = {
+                success: false,
+                error: 'Room ID, message ID, and emoji are required'
+            };
+            return callback(response);
+        }
+
+        // Validate room membership
+        const senderRoomId = manager.getRoomBySocketId(socket.id);
+        if (senderRoomId !== roomId) {
+            const response: ErrorResponse = {
+                success: false,
+                error: 'You are not in this room'
+            };
+            return callback(response);
+        }
+
+        // Add reaction
+        const reaction = messageStorage.addReaction(roomId, messageId, emoji, socket.id);
+        if (!reaction) {
+            const response: ErrorResponse = {
+                success: false,
+                error: 'Message not found'
+            };
+            return callback(response);
+        }
+
+        log('success', 'Reaction added successfully', {
+            messageId,
+            emoji,
+            userId: socket.id,
+            reactionCount: reaction.count
+        });
+
+        const response: AddReactionResponse = {
+            success: true,
+            messageId,
+            reaction
+        };
+        callback(response);
+
+        // Broadcast reaction to all participants
+        io.to(roomId).emit('chat-reaction-added', {
+            roomId,
+            messageId,
+            reaction
+        });
+
+    } catch (error) {
+        const err = error as Error;
+        log('error', 'Error handling add-reaction', {
+            socketId: socket.id,
+            error: err.message
+        });
+
+        const response: ErrorResponse = {
+            success: false,
+            error: 'Internal server error while adding reaction'
+        };
+        callback(response);
+    }
+};
+
+// Remove reaction handler
+export const handleRemoveReaction = (
+    socket: Socket,
+    manager: RoomManager,
+    io: Server,
+    data: RemoveReactionRequest,
+    callback: (response: any) => void
+) => {
+    log('info', 'Received remove-reaction request', {
+        socketId: socket.id,
+        roomId: data.roomId,
+        messageId: data.messageId,
+        emoji: data.emoji
+    });
+
+    try {
+        const { roomId, messageId, emoji } = data;
+
+        // Validate room membership
+        const senderRoomId = manager.getRoomBySocketId(socket.id);
+        if (senderRoomId !== roomId) {
+            const response: ErrorResponse = {
+                success: false,
+                error: 'You are not in this room'
+            };
+            return callback(response);
+        }
+
+        // Remove reaction
+        const removed = messageStorage.removeReaction(roomId, messageId, emoji, socket.id);
+        if (!removed) {
+            const response: ErrorResponse = {
+                success: false,
+                error: 'Reaction not found'
+            };
+            return callback(response);
+        }
+
+        log('success', 'Reaction removed successfully', {
+            messageId,
+            emoji,
+            userId: socket.id
+        });
+
+        const response: RemoveReactionResponse = {
+            success: true,
+            messageId,
+            emoji
+        };
+        callback(response);
+
+        // Broadcast reaction removal to all participants
+        io.to(roomId).emit('chat-reaction-removed', {
+            roomId,
+            messageId,
+            emoji,
+            userId: socket.id
+        });
+
+    } catch (error) {
+        const err = error as Error;
+        log('error', 'Error handling remove-reaction', {
+            socketId: socket.id,
+            error: err.message
+        });
+
+        const response: ErrorResponse = {
+            success: false,
+            error: 'Internal server error while removing reaction'
+        };
+        callback(response);
+    }
+};
+
+export const createSystemMessage = (
+    roomId: string,
+    type: SystemMessageType,
+    userName: string,
+    userId: string,
+    isHost: boolean,
+    io: Server,
+    metadata?: any
+): void => {
+    const getSystemMessageContent = (): string => {
+        switch (type) {
+            case 'participant-joined':
+                return `${userName} joined the room`;
+            case 'participant-left':
+                return `${userName} left the room`;
+            case 'host-joined':
+                return `${userName} (host) joined the room`;
+            case 'host-left':
+                return `${userName} (host) left the room`;
+            case 'host-changed':
+                return `${userName} is now the host`;
+            case 'room-created':
+                return `Room created by ${userName}`;
+            default:
+                return `${userName} updated the room`;
+        }
+    };
+
+    const systemMessage: ChatMessage = {
+        id: `system-${Date.now()}-${Math.random()}`,
+        roomId,
+        senderId: 'system',
+        senderName: 'System',
+        content: getSystemMessageContent(),
+        timestamp: new Date().toISOString(),
+        type: 'system',
+        mentions: [],
+        reactions: []
+    };
+
+    // Store system message
+    messageStorage.addMessage(systemMessage);
+
+    // Broadcast to room
+    io.to(roomId).emit('chat-system-message', systemMessage);
+
+    log('info', 'System message created', {
+        type,
+        userName,
+        isHost,
+        roomId,
+        content: systemMessage.content
+    });
 };
 
 // Clean up messages when room is deleted
