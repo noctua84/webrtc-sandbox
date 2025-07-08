@@ -1,16 +1,3 @@
-// CHAT INTEGRATION GUIDE
-// Follow these steps to add chat to your existing WebRTC application
-
-// 10. TESTING
-// After integration, test these features:
-// ✅ Send messages
-// ✅ Edit your own messages
-// ✅ Delete your own messages
-// ✅ Typing indicators
-// ✅ Chat history when joining room
-// ✅ Message persistence across reconnections
-// ✅ Real-time updates for all participants
-
 // FEATURES INCLUDED:
 // ✅ Real-time messaging
 // ✅ Message editing/deletion

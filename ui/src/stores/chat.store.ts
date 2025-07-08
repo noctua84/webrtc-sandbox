@@ -78,11 +78,6 @@ class ChatStore {
             this.handleTypingIndicator(data);
         });
 
-        // Handle chat history
-        socketStore.on('chat-history', (data: { roomId: string; messages: ChatMessage[] }) => {
-            this.handleChatHistory(data);
-        });
-
         this.log('info', 'Chat socket listeners configured');
     }
 
@@ -159,25 +154,6 @@ class ChatStore {
                 });
             }, 3000);
         }
-    }
-
-    @action
-    private handleChatHistory(data: { roomId: string; messages: ChatMessage[] }): void {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) {
-            this.log('warning', 'Received chat history for different room', {
-                dataRoomId: data.roomId,
-                currentRoomId: roomStore.currentRoom?.id
-            });
-            return;
-        }
-
-        this.log('info', 'Received chat history via event', { messageCount: data.messages.length });
-
-        runInAction(() => {
-            this.messages = data.messages || [];
-            this.isLoading = false;
-            this.error = null;
-        });
     }
 
     // Send a message

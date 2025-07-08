@@ -1,4 +1,4 @@
-// ui/src/components/Chat/ChatComponent.tsx - Updated with better loading handling
+// ui/src/components/Chat/ChatComponent.tsx - Fixed infinite loop issue
 
 import React, { useState, useRef, useEffect } from 'react';
 import { observer } from 'mobx-react-lite';
@@ -10,6 +10,7 @@ import TypingIndicator from './TypingIndicator';
 
 const ChatComponent: React.FC = observer(() => {
     const [isCollapsed, setIsCollapsed] = useState(false);
+    const [hasLoadedHistory, setHasLoadedHistory] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Auto-scroll to bottom when new messages arrive
@@ -17,19 +18,34 @@ const ChatComponent: React.FC = observer(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [chatStore.messages.length]);
 
-    // Load chat history when joining a room
+    // Load chat history when joining a room - FIXED VERSION
     useEffect(() => {
-        if (roomStore.isInRoom && !chatStore.hasMessages && !chatStore.isLoading) {
-            console.log('🔄 Loading chat history for room:', roomStore.currentRoom?.id);
-            chatStore.loadChatHistory();
+        const currentRoomId = roomStore.currentRoom?.id;
+
+        // Reset history loaded flag when room changes
+        if (!roomStore.isInRoom || !currentRoomId) {
+            setHasLoadedHistory(false);
+            return;
         }
-    }, [roomStore.isInRoom, chatStore.hasMessages, chatStore.isLoading]);
+
+        // Only load if we haven't loaded for this room yet
+        if (!hasLoadedHistory && !chatStore.isLoading) {
+            console.log('🔄 Loading chat history for room:', currentRoomId);
+            setHasLoadedHistory(true); // Set immediately to prevent loops
+
+            chatStore.loadChatHistory().catch((error) => {
+                console.error('Failed to load chat history:', error);
+                setHasLoadedHistory(false); // Reset on error so user can retry
+            });
+        }
+    }, [roomStore.isInRoom, roomStore.currentRoom?.id]); // ONLY depend on room state
 
     // Clean up when leaving room
     useEffect(() => {
         if (!roomStore.isInRoom) {
             console.log('🧹 Cleaning up chat messages');
             chatStore.clearMessages();
+            setHasLoadedHistory(false); // Reset for next room
         }
     }, [roomStore.isInRoom]);
 
@@ -37,14 +53,15 @@ const ChatComponent: React.FC = observer(() => {
         return null;
     }
 
-    // Debug info
-    console.log('📊 Chat state:', {
+    // Debug info (but don't cause re-renders)
+    const debugInfo = {
         isLoading: chatStore.isLoading,
         messageCount: chatStore.messages.length,
         hasMessages: chatStore.hasMessages,
         error: chatStore.error,
-        shouldShowLoading: chatStore.shouldShowLoading
-    });
+        hasLoadedHistory,
+        roomId: roomStore.currentRoom?.id
+    };
 
     return (
         <div className={`flex flex-col bg-white border border-gray-200 rounded-lg shadow-sm transition-all duration-300 ${
@@ -74,16 +91,15 @@ const ChatComponent: React.FC = observer(() => {
                     {/* Debug button */}
                     <button
                         onClick={() => {
-                            console.log('🐛 Chat debug:', {
-                                isLoading: chatStore.isLoading,
-                                messages: chatStore.messages,
-                                error: chatStore.error,
-                                roomId: roomStore.currentRoom?.id
-                            });
-                            // Force reload if stuck
-                            if (chatStore.isLoading) {
+                            console.log('🐛 Chat debug:', debugInfo);
+                            // Force reload if needed
+                            if (chatStore.isLoading || chatStore.error) {
+                                setHasLoadedHistory(false);
                                 chatStore.resetLoadingState();
-                                setTimeout(() => chatStore.loadChatHistory(), 100);
+                                setTimeout(() => {
+                                    setHasLoadedHistory(true);
+                                    chatStore.loadChatHistory();
+                                }, 100);
                             }
                         }}
                         className="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded"
@@ -113,8 +129,8 @@ const ChatComponent: React.FC = observer(() => {
                 <>
                     {/* Messages Area */}
                     <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
-                        {/* Show loading only if no messages and loading */}
-                        {chatStore.shouldShowLoading ? (
+                        {/* Show loading only if loading and no messages */}
+                        {chatStore.isLoading && chatStore.messages.length === 0 ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="flex items-center gap-2 text-gray-500">
                                     <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
@@ -132,7 +148,14 @@ const ChatComponent: React.FC = observer(() => {
                                     <p className="text-sm">Failed to load chat</p>
                                     <p className="text-xs">{chatStore.error}</p>
                                     <button
-                                        onClick={() => chatStore.loadChatHistory()}
+                                        onClick={() => {
+                                            setHasLoadedHistory(false);
+                                            chatStore.resetLoadingState();
+                                            setTimeout(() => {
+                                                setHasLoadedHistory(true);
+                                                chatStore.loadChatHistory();
+                                            }, 100);
+                                        }}
                                         className="mt-2 text-xs text-blue-600 hover:text-blue-800"
                                     >
                                         Try again
