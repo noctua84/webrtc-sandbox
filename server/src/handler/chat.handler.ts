@@ -33,10 +33,26 @@ class MessageStorage {
         if (roomMessages.length > 200) {
             this.messages.set(message.roomId, roomMessages.slice(-200));
         }
+
+        // Debug log
+        log('info', 'Message added to storage', {
+            roomId: message.roomId,
+            messageId: message.id,
+            totalMessages: roomMessages.length
+        });
     }
 
     getMessages(roomId: string): ChatMessage[] {
-        return this.messages.get(roomId) || [];
+        const messages = this.messages.get(roomId) || [];
+
+        // Debug log
+        log('info', 'Messages retrieved from storage', {
+            roomId,
+            messageCount: messages.length,
+            hasMessages: messages.length > 0
+        });
+
+        return messages;
     }
 
     updateMessage(roomId: string, messageId: string, newContent: string): ChatMessage | null {
@@ -480,10 +496,25 @@ export const handleGetChatHistory = (
     try {
         const { roomId } = data;
 
+        // Validate input
+        if (!roomId) {
+            log('error', 'Missing roomId in get-chat-history request', { socketId: socket.id });
+            const response = {
+                success: false,
+                error: 'Room ID is required'
+            };
+            return callback(response);
+        }
+
         // Validate that requester is in the room
         const requesterRoomId = manager.getRoomBySocketId(socket.id);
         if (requesterRoomId !== roomId) {
-            const response: ErrorResponse = {
+            log('error', 'Chat history request from participant not in room', {
+                socketId: socket.id,
+                requesterRoomId,
+                requestedRoomId: roomId
+            });
+            const response = {
                 success: false,
                 error: 'You are not in this room'
             };
@@ -493,18 +524,26 @@ export const handleGetChatHistory = (
         // Get chat history
         const messages = messageStorage.getMessages(roomId);
 
-        log('success', 'Chat history retrieved', {
+        log('success', 'Chat history retrieved successfully', {
             roomId,
             messageCount: messages.length,
             requestedBy: socket.id
         });
 
-        // Send response
+        // Send response with proper structure
         const response = {
             success: true,
-            messages
+            messages: messages || [] // Ensure messages is always an array
         };
+
         callback(response);
+
+        // ALSO emit the chat-history event as backup
+        // (in case the client is still listening for events)
+        socket.emit('chat-history', {
+            roomId,
+            messages: messages || []
+        });
 
     } catch (error) {
         const err = error as Error;
@@ -514,7 +553,7 @@ export const handleGetChatHistory = (
             stack: err.stack
         });
 
-        const response: ErrorResponse = {
+        const response = {
             success: false,
             error: 'Internal server error while retrieving chat history'
         };

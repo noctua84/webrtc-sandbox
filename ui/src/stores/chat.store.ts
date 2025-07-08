@@ -163,13 +163,20 @@ class ChatStore {
 
     @action
     private handleChatHistory(data: { roomId: string; messages: ChatMessage[] }): void {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return;
+        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) {
+            this.log('warning', 'Received chat history for different room', {
+                dataRoomId: data.roomId,
+                currentRoomId: roomStore.currentRoom?.id
+            });
+            return;
+        }
 
-        this.log('info', 'Received chat history', { messageCount: data.messages.length });
+        this.log('info', 'Received chat history via event', { messageCount: data.messages.length });
 
         runInAction(() => {
-            this.messages = data.messages;
+            this.messages = data.messages || [];
             this.isLoading = false;
+            this.error = null;
         });
     }
 
@@ -305,8 +312,21 @@ class ChatStore {
         this.log('info', 'Loading chat history', { roomId: roomStore.currentRoom.id });
 
         try {
-            await socketStore.emitWithCallback('get-chat-history', {
-                roomId: roomStore.currentRoom.id
+            // Use emitWithCallback instead of relying on separate event
+            const response = await socketStore.emitWithCallback<{ success: true; messages: ChatMessage[] }>(
+                'get-chat-history',
+                { roomId: roomStore.currentRoom.id },
+                5000 // 5 second timeout
+            );
+
+            this.log('info', 'Chat history loaded successfully', {
+                messageCount: response.messages.length
+            });
+
+            runInAction(() => {
+                this.messages = response.messages || [];
+                this.isLoading = false;
+                this.error = null;
             });
 
         } catch (error) {
@@ -315,6 +335,7 @@ class ChatStore {
             runInAction(() => {
                 this.isLoading = false;
                 this.error = (error as Error).message;
+                // Don't clear messages on error, keep any existing ones
             });
         }
     }
@@ -344,6 +365,15 @@ class ChatStore {
             this.logs = [];
         });
         this.log('info', 'Chat logs cleared');
+    }
+
+    @action
+    resetLoadingState(): void {
+        this.log('info', 'Manually resetting loading state');
+        runInAction(() => {
+            this.isLoading = false;
+            this.error = null;
+        });
     }
 
     // Computed properties
@@ -388,6 +418,11 @@ class ChatStore {
     // Check if user can edit/delete message
     canEditMessage(message: ChatMessage): boolean {
         return message.senderId === roomStore.currentParticipant?.socketId;
+    }
+
+    @computed
+    get shouldShowLoading(): boolean {
+        return this.isLoading && this.messages.length === 0;
     }
 }
 

@@ -1,4 +1,4 @@
-// ui/src/components/Chat/ChatComponent.tsx
+// ui/src/components/Chat/ChatComponent.tsx - Updated with better loading handling
 
 import React, { useState, useRef, useEffect } from 'react';
 import { observer } from 'mobx-react-lite';
@@ -19,14 +19,16 @@ const ChatComponent: React.FC = observer(() => {
 
     // Load chat history when joining a room
     useEffect(() => {
-        if (roomStore.isInRoom && !chatStore.hasMessages) {
+        if (roomStore.isInRoom && !chatStore.hasMessages && !chatStore.isLoading) {
+            console.log('🔄 Loading chat history for room:', roomStore.currentRoom?.id);
             chatStore.loadChatHistory();
         }
-    }, [roomStore.isInRoom]);
+    }, [roomStore.isInRoom, chatStore.hasMessages, chatStore.isLoading]);
 
     // Clean up when leaving room
     useEffect(() => {
         if (!roomStore.isInRoom) {
+            console.log('🧹 Cleaning up chat messages');
             chatStore.clearMessages();
         }
     }, [roomStore.isInRoom]);
@@ -34,6 +36,15 @@ const ChatComponent: React.FC = observer(() => {
     if (!roomStore.isInRoom) {
         return null;
     }
+
+    // Debug info
+    console.log('📊 Chat state:', {
+        isLoading: chatStore.isLoading,
+        messageCount: chatStore.messages.length,
+        hasMessages: chatStore.hasMessages,
+        error: chatStore.error,
+        shouldShowLoading: chatStore.shouldShowLoading
+    });
 
     return (
         <div className={`flex flex-col bg-white border border-gray-200 rounded-lg shadow-sm transition-all duration-300 ${
@@ -53,23 +64,48 @@ const ChatComponent: React.FC = observer(() => {
                         </h3>
                         <p className="text-xs text-gray-500">
                             {chatStore.messageCount} messages • {roomStore.participants.length} participants
+                            {chatStore.isLoading && ' • Loading...'}
+                            {chatStore.error && ' • Error!'}
                         </p>
                     </div>
                 </div>
 
-                <button
-                    onClick={() => setIsCollapsed(!isCollapsed)}
-                    className="p-1 hover:bg-gray-200 rounded transition-colors"
-                >
-                    <svg
-                        className={`w-4 h-4 text-gray-600 transition-transform ${isCollapsed ? 'rotate-180' : ''}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
+                <div className="flex items-center gap-2">
+                    {/* Debug button */}
+                    <button
+                        onClick={() => {
+                            console.log('🐛 Chat debug:', {
+                                isLoading: chatStore.isLoading,
+                                messages: chatStore.messages,
+                                error: chatStore.error,
+                                roomId: roomStore.currentRoom?.id
+                            });
+                            // Force reload if stuck
+                            if (chatStore.isLoading) {
+                                chatStore.resetLoadingState();
+                                setTimeout(() => chatStore.loadChatHistory(), 100);
+                            }
+                        }}
+                        className="text-xs px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded"
+                        title="Debug chat state"
                     >
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                </button>
+                        🐛
+                    </button>
+
+                    <button
+                        onClick={() => setIsCollapsed(!isCollapsed)}
+                        className="p-1 hover:bg-gray-200 rounded transition-colors"
+                    >
+                        <svg
+                            className={`w-4 h-4 text-gray-600 transition-transform ${isCollapsed ? 'rotate-180' : ''}`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                        >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                    </button>
+                </div>
             </div>
 
             {/* Chat Content */}
@@ -77,11 +113,30 @@ const ChatComponent: React.FC = observer(() => {
                 <>
                     {/* Messages Area */}
                     <div className="flex-1 overflow-y-auto p-3 space-y-3 min-h-0">
-                        {chatStore.isLoading ? (
+                        {/* Show loading only if no messages and loading */}
+                        {chatStore.shouldShowLoading ? (
                             <div className="flex items-center justify-center h-full">
                                 <div className="flex items-center gap-2 text-gray-500">
                                     <div className="w-4 h-4 border-2 border-gray-300 border-t-blue-600 rounded-full animate-spin"></div>
                                     <span className="text-sm">Loading chat history...</span>
+                                </div>
+                            </div>
+                        ) : chatStore.error ? (
+                            <div className="flex items-center justify-center h-full">
+                                <div className="text-center text-red-500">
+                                    <div className="w-12 h-12 mx-auto mb-3 text-red-300">
+                                        <svg fill="currentColor" viewBox="0 0 20 20">
+                                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                                        </svg>
+                                    </div>
+                                    <p className="text-sm">Failed to load chat</p>
+                                    <p className="text-xs">{chatStore.error}</p>
+                                    <button
+                                        onClick={() => chatStore.loadChatHistory()}
+                                        className="mt-2 text-xs text-blue-600 hover:text-blue-800"
+                                    >
+                                        Try again
+                                    </button>
                                 </div>
                             </div>
                         ) : chatStore.hasMessages ? (
