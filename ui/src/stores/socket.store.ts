@@ -1,17 +1,16 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import { io, Socket } from 'socket.io-client';
-import type {
-    LogLevel,
-    LogEntry,
-    LogData,
-    ConnectionStatus,
-    ServerToClientEvents,
-    ClientToServerEvents,
-    ApiResponse, ReconnectionAvailableEvent
-} from '../types';
+import {
+    ApiResponse,
+    ExtendedClientToServerEvents,
+    ExtendedServerToClientEvents,
+    ReconnectionAvailableEvent,
+} from "@/types/event.types.ts";
+import {LogLevel, LogData, LogEntry} from "@/types/logging.types.ts";
+import {ConnectionStatus} from "@/types/connection.types.ts";
 
 class SocketStore {
-    socket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
+    socket: Socket<ExtendedServerToClientEvents, ExtendedClientToServerEvents> | null = null;
     isConnected: boolean = false;
     isConnecting: boolean = false;
     connectionError: string | null = null;
@@ -175,7 +174,7 @@ class SocketStore {
     }
 
     // Utility method to emit events with logging and error handling
-    emitWithCallback<T extends { success: true }>(event: keyof ClientToServerEvents, data: any, timeoutMs: number = 10000): Promise<T> {
+    emitWithCallback<T extends { success: true }>(event: keyof ExtendedClientToServerEvents, data: any, timeoutMs: number = 10000): Promise<T> {
         return new Promise((resolve, reject) => {
             if (!this.socket || !this.isConnected) {
                 const error = 'Cannot emit: socket not connected';
@@ -214,7 +213,7 @@ class SocketStore {
     }
 
     // Utility method to emit events without expecting a callback
-    emit(event: keyof ClientToServerEvents, data: any): boolean {
+    emit(event: keyof ExtendedClientToServerEvents, data: any): boolean {
         if (!this.socket || !this.isConnected) {
             this.log('error', 'Cannot emit: socket not connected', { event, data });
             return false;
@@ -226,7 +225,7 @@ class SocketStore {
     }
 
     // Register event listener with logging
-    on<K extends keyof ServerToClientEvents>(event: K, handler: ServerToClientEvents[K]): void {
+    on<K extends keyof ExtendedServerToClientEvents>(event: K, handler: ExtendedServerToClientEvents[K]): void {
         if (!this.socket) {
             this.log('error', 'Cannot register listener: socket not available', { event });
             return;
@@ -243,7 +242,7 @@ class SocketStore {
     }
 
     // Remove event listener with logging
-    off<K extends keyof ServerToClientEvents>(event: K, handler?: ServerToClientEvents[K]): void {
+    off<K extends keyof ExtendedServerToClientEvents>(event: K, handler?: ExtendedServerToClientEvents[K]): void {
         if (!this.socket) {
             this.log('warning', 'Cannot remove listener: socket not available', { event });
             return;

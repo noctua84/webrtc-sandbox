@@ -1,5 +1,5 @@
 // Types for the WebRTC signaling server
-
+// Participant
 export interface Participant {
     socketId: string;
     userName: string;
@@ -15,6 +15,7 @@ export interface Participant {
     };
 }
 
+// Room types
 export interface Room {
     id: string;
     creator: string;
@@ -200,6 +201,13 @@ export interface ServerToClientEvents {
     'webrtc-answer': (data: WebRTCAnswer) => void;
     'webrtc-ice-candidate': (data: WebRTCIceCandidate) => void;
     'peer-disconnected': (data: { roomId: string; participantId: string }) => void;
+
+    // Chat events
+    'chat-message': (data: ChatMessage) => void;
+    'chat-message-edited': (data: ChatMessage) => void;
+    'chat-message-deleted': (data: { roomId: string; messageId: string }) => void;
+    'chat-typing': (data: { roomId: string; userId: string; userName: string; isTyping: boolean }) => void;
+    'chat-history': (data: { roomId: string; messages: ChatMessage[] }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -212,6 +220,14 @@ export interface ClientToServerEvents {
     'webrtc-answer': (data: WebRTCAnswer, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
     'webrtc-ice-candidate': (data: WebRTCIceCandidate, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
     'update-media-status': (data: MediaStatusUpdate, callback: (response: ApiResponse<{ success: boolean }>) => void) => void;
+
+    // Chat events
+    'send-message': (data: SendMessageRequest, callback: (response: ApiResponse<SendMessageResponse>) => void) => void;
+    'edit-message': (data: EditMessageRequest, callback: (response: ApiResponse<EditMessageResponse>) => void) => void;
+    'delete-message': (data: DeleteMessageRequest, callback: (response: ApiResponse<DeleteMessageResponse>) => void) => void;
+    'typing-indicator': (data: TypingIndicatorRequest, callback: (response: ApiResponse<TypingIndicatorResponse>) => void) => void;
+    'get-chat-history': (data: { roomId: string }, callback: (response: ApiResponse<{ messages: ChatMessage[] }>) => void) => void;
+
 }
 
 export interface InterServerEvents {
@@ -235,4 +251,60 @@ export interface Socket {
     emit(event: string, ...args: any[]): void;
     on(event: string, handler: (...args: any[]) => void): void;
     disconnect(): void;
+}
+
+// Chat message types
+export interface ChatMessage {
+    id: string;
+    roomId: string;
+    senderId: string;
+    senderName: string;
+    content: string;
+    timestamp: string;
+    type: 'text' | 'system' | 'emoji' | 'file';
+    edited?: boolean | undefined;
+    editedAt?: string | undefined;
+    replyTo?: string | undefined;
+}
+
+export interface SendMessageRequest {
+    roomId: string;
+    content: string;
+    type?: 'text' | 'emoji';
+    replyTo?: string;
+}
+
+export interface SendMessageResponse {
+    success: true;
+    message: ChatMessage;
+}
+
+export interface EditMessageRequest {
+    roomId: string;
+    messageId: string;
+    newContent: string;
+}
+
+export interface EditMessageResponse {
+    success: true;
+    message: ChatMessage;
+}
+
+export interface DeleteMessageRequest {
+    roomId: string;
+    messageId: string;
+}
+
+export interface DeleteMessageResponse {
+    success: true;
+    messageId: string;
+}
+
+export interface TypingIndicatorRequest {
+    roomId: string;
+    isTyping: boolean;
+}
+
+export interface TypingIndicatorResponse {
+    success: true;
 }

@@ -2,18 +2,18 @@
 import {action, computed, makeAutoObservable, observable, runInAction} from 'mobx';
 import socketStore from './socket.store';
 import roomStore from './room.store';
-import type {
-    PeerConnection,
-    WebRTCOffer,
-    WebRTCAnswer,
-    WebRTCIceCandidate,
+
+import {ConnectivityTestResult, runWebRTCDiagnostics} from "@/diagnostics/webrtc.diagnostics.ts";
+
+import {LogData, LogEntry, LogLevel} from "@/types/logging.types.ts";
+import {
     MediaConstraints,
     MediaStatus,
-    LogLevel,
-    LogEntry,
-    LogData
-} from '../types';
-import {ConnectivityTestResult, runWebRTCDiagnostics} from "@/diagnostics/webrtc.diagnostics.ts";
+    PeerConnection,
+    WebRTCAnswer,
+    WebRTCIceCandidate,
+    WebRTCOffer
+} from "@/types/webrtc.types.ts";
 
 // ============================================================================
 // CONSTANTS & CONFIGURATION

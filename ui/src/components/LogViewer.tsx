@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { observer } from 'mobx-react-lite';
-import type { LogViewerProps, LogLevel } from '../types';
+import type { LogViewerProps, LogLevel } from '../types/connection.types.ts';
 
 const LogViewer: React.FC<LogViewerProps> = observer(({ logs, title, onClear, className = '' }) => {
     const logContainerRef = useRef<HTMLDivElement>(null);

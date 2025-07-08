@@ -1,5 +1,5 @@
 import React from 'react';
-import type { StatusIndicatorProps, ConnectionStatus, RoomStatus } from '../types';
+import type { StatusIndicatorProps, ConnectionStatus, RoomStatus } from '../types/connection.types.ts';
 
 const StatusIndicator: React.FC<StatusIndicatorProps> = ({ status, label, className = '' }) => {
     const getStatusConfig = (status: ConnectionStatus | RoomStatus) => {

@@ -10,6 +10,7 @@ import RoomInfo from './components/RoomInfo.tsx';
 import ReconnectionBanner from './components/ReconnectionBanner.tsx';
 import VideoGrid from './components/VideoGrid.tsx';
 import MediaControls from './components/MediaControls.tsx';
+import ChatComponent from "@/components/ChatComponent.tsx";
 
 const App: React.FC = observer(() => {
     return (
@@ -48,6 +49,7 @@ const App: React.FC = observer(() => {
                     <div className="space-y-8">
                         {/* Video Section */}
                         <VideoGrid />
+                        <ChatComponent />
 
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                             {/* Room Controls */}

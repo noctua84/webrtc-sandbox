@@ -31,6 +31,13 @@ import {handleUpdateMediaStatus} from "./handler/media.handler";
 import {handleDisconnect} from "./handler/connection.handler";
 import {log} from "./logging";
 import {getEnvironmentConfig, ROOM_CONFIG, SERVER_CONFIG} from "./config";
+import {
+    handleDeleteMessage,
+    handleEditMessage,
+    handleGetChatHistory,
+    handleSendMessage,
+    handleTypingIndicator
+} from "./handler/chat.handler";
 
 const app = express();
 const server = createServer(app);
@@ -148,6 +155,27 @@ io.on('connection', (socket) => {
     // Handle generic errors
     socket.on('error' as any, (error: Error) => {
         log('error', `Socket error`, { socketId: socket.id, error: error.message });
+    });
+
+    // Handle chat messages
+    socket.on('send-message', (data, callback) => {
+        handleSendMessage(socket, manager, io, data, callback);
+    });
+
+    socket.on('edit-message', (data, callback) => {
+        handleEditMessage(socket, manager, io, data, callback);
+    });
+
+    socket.on('delete-message', (data, callback) => {
+        handleDeleteMessage(socket, manager, io, data, callback);
+    });
+
+    socket.on('typing-indicator', (data, callback) => {
+        handleTypingIndicator(socket, manager, io, data, callback);
+    });
+
+    socket.on('get-chat-history', (data, callback) => {
+        handleGetChatHistory(socket, manager, data, callback);
     });
 });
 

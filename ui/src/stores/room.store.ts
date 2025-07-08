@@ -1,24 +1,19 @@
 import { makeAutoObservable, runInAction } from 'mobx';
 import socketStore from './socket.store';
-import type {
-    Room,
-    Participant,
+import {
     CreateRoomRequest,
-    JoinRoomRequest,
-    ReconnectRoomRequest,
-    GetRoomInfoRequest,
     CreateRoomResponse,
+    JoinRoomRequest,
     JoinRoomResponse,
+    ReconnectRoomRequest,
     ReconnectRoomResponse,
-    GetRoomInfoResponse,
-    RoomUpdateEvent,
-    ReconnectionAvailableEvent,
-    RoomStatus,
-    LogLevel,
-    LogEntry,
-    LogData,
-    ReconnectionData
-} from '../types';
+    GetRoomInfoRequest,
+    GetRoomInfoResponse, Room, RoomStatus,
+} from '../types/room.types';
+import {ReconnectionData} from "@/types/connection.types.ts";
+import {LogData, LogEntry, LogLevel} from "@/types/logging.types.ts";
+import {Participant} from "@/types/participant.types.ts";
+import {ReconnectionAvailableEvent, RoomUpdateEvent} from "@/types/event.types.ts";
 
 // ============================================================================
 // UTILITY FUNCTIONS

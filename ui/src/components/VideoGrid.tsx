@@ -2,7 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { observer } from 'mobx-react-lite';
 import roomStore from "@/stores/room.store";
 import webrtcStore from "@/stores/webrtc.store";
-import type { Participant } from "@/types";
+import {Participant} from "@/types/participant.types.ts";
+
 
 // ============================================================================
 // TYPES & INTERFACES
