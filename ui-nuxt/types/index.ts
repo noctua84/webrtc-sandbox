@@ -1,4 +1,5 @@
 // types/index.ts
+import type {MediaStatus} from "./webrtc.types";
 
 // ============================================================================
 // CONNECTION TYPES
@@ -59,39 +60,6 @@ export interface JoinRoomResponse {
     participants: Participant[]
     error?: string
     success: boolean
-}
-
-// ============================================================================
-// WEBRTC TYPES
-// ============================================================================
-
-export interface MediaStatus {
-    video: boolean
-    audio: boolean
-    screen: boolean
-}
-
-export interface WebRTCOffer {
-    roomId: string
-    targetSocketId: string
-    offer: RTCSessionDescriptionInit
-}
-
-export interface WebRTCAnswer {
-    roomId: string
-    targetSocketId: string
-    answer: RTCSessionDescriptionInit
-}
-
-export interface WebRTCIceCandidate {
-    roomId: string
-    targetSocketId: string
-    candidate: RTCIceCandidateInit
-}
-
-export interface MediaStatusUpdate {
-    roomId: string
-    mediaStatus: MediaStatus
 }
 
 // ============================================================================
