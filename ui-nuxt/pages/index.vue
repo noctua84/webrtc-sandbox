@@ -107,10 +107,12 @@
 </template>
 
 <script setup lang="ts">
-// Page meta
 import {useWebRTCStore} from "../stores/webrtc";
 import {useRoomStore} from "../stores/room";
+import {ref, computed, watch, onBeforeUnmount} from 'vue'
+import {definePageMeta} from "nuxt/dist/pages/runtime";
 
+// Page meta
 definePageMeta({
   title: 'WebRTC Video Streaming'
 })

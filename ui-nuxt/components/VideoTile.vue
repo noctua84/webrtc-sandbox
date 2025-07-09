@@ -114,6 +114,8 @@
 </template>
 
 <script setup lang="ts">
+import { ref, computed, watch, onMounted } from 'vue'
+
 interface Props {
   stream: MediaStream | null
   userName: string

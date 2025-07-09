@@ -57,10 +57,12 @@
 </template>
 
 <script setup lang="ts">
-// Stores
 import {useWebRTCStore} from "../stores/webrtc";
 import {useRoomStore} from "../stores/room";
+import VideoTile from "./VideoTile.vue";
+import {computed} from "vue";
 
+// Stores
 const webrtcStore = useWebRTCStore()
 const roomStore = useRoomStore()
 
