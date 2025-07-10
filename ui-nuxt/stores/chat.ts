@@ -1,9 +1,9 @@
 // stores/chat.store.ts
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { useSocket } from '../composables/useSocket'
+import { useSocket } from '~/composables/useSocket'
 import { useRoomStore } from './room'
-import {
+import type {
     ChatMessage,
     MessageReaction,
     DeleteMessageRequest,
@@ -18,7 +18,7 @@ import {
     TypingIndicatorRequest,
     ChatParticipant,
     ChatError,
-} from '../types/chat.types'
+} from '~/types/chat.types'
 
 export const useChatStore = defineStore('chat', () => {
     // State

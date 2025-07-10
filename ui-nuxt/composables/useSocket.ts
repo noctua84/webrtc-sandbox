@@ -49,6 +49,8 @@ export const useSocket = () => {
 
             const serverUrl = config?.public?.serverUrl as string || 'http://localhost:3001'
 
+            console.log('Connecting to server:', serverUrl)
+
             socket = io(serverUrl , {
                 transports: ['websocket', 'polling'],
                 timeout: 10000,

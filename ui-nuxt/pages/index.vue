@@ -75,7 +75,7 @@
         location="top"
     >
       <v-icon start>mdi-alert-circle</v-icon>
-      {{ roomStore.roomError }}
+      {{ roomStore.roomError?.message }}
 
       <template #actions>
         <v-btn

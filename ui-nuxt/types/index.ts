@@ -1,26 +1,8 @@
-import type {Participant, Room} from "./room.types";
-
 // ============================================================================
 // CONNECTION TYPES
 // ============================================================================
 
 export type ConnectionStatus = 'connected' | 'connecting' | 'disconnected' | 'error'
-
-export interface ReconnectionData {
-    roomId: string
-    userName: string
-    timestamp: number
-}
-
-// ============================================================================
-// EVENT TYPES
-// ============================================================================
-
-export interface RoomUpdateEvent {
-    room: Room
-    participants: Participant[]
-    eventType: 'participant-joined' | 'participant-left' | 'participant-updated'
-}
 
 // ============================================================================
 // API RESPONSE TYPES

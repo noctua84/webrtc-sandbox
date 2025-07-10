@@ -11,7 +11,7 @@
 
 <script setup lang="ts">
 // Stores
-import {useSocket} from "../composables/useSocket";
+import {useSocket} from "~/composables/useSocket";
 
 const socketStore = useSocket()
 

@@ -118,7 +118,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useRoomStore } from '../stores/room'
+import { useRoomStore } from '~/stores/room'
 
 // Stores
 const roomStore = useRoomStore()
