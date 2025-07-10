@@ -1,31 +1,25 @@
 // stores/room.ts
 import { defineStore } from 'pinia'
 import type {
+    RoomUpdateEvent,
+    ReconnectionData,
+} from '../types'
+import type {
     Room,
     Participant,
     RoomStatus,
+    RoomError,
     CreateRoomRequest,
     CreateRoomResponse,
     JoinRoomRequest,
     JoinRoomResponse,
-    RoomUpdateEvent,
-    ReconnectionData,
-    LogEntry,
-    LogLevel,
-    LogData
-} from '../types'
-import {useSocket} from "../composables/useSocket";
+    LeaveRoomRequest
+} from '~/types/room.types'
+import {useSocket} from "~/composables/useSocket"
+import { ref, computed, readonly } from 'vue'
 
 const RECONNECTION_STORAGE_KEY = 'webrtc-reconnection-data'
 const RECONNECTION_EXPIRY_MS = 5 * 60 * 1000
-
-const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEntry => ({
-    id: Date.now() + Math.random(),
-    timestamp: new Date().toISOString(),
-    level,
-    message,
-    data: data ? JSON.stringify(data, null, 2) : null
-})
 
 export const useRoomStore = defineStore('room', () => {
     // State
@@ -33,23 +27,40 @@ export const useRoomStore = defineStore('room', () => {
     const currentParticipant = ref<Participant | null>(null)
     const participants = ref<Participant[]>([])
     const roomStatus = ref<RoomStatus>('none')
-    const roomError = ref<string | null>(null)
-    const logs = ref<LogEntry[]>([])
+    const roomError = ref<RoomError | null>(null)
 
-    // Composables
-    const { emit, on, off, addLog: addSocketLog } = useSocket()
+    // Loading states
+    const isCreatingRoom = ref(false)
+    const isJoiningRoom = ref(false)
+    const isReconnecting = ref(false)
 
-    // Helper functions
-    const addLog = (level: LogLevel, message: string, data?: LogData) => {
-        const entry = createLogEntry(level, message, data)
-        logs.value.push(entry)
+    // Dependencies
+    const socketStore = useSocket()
 
-        // Keep only last 1000 logs
-        if (logs.value.length > 1000) {
-            logs.value = logs.value.slice(-1000)
+    // Utility functions
+    const setError = (message: string, code?: string) => {
+        roomError.value = {
+            message,
+            code,
+            timestamp: new Date().toISOString()
+        }
+
+        if (process.env.NODE_ENV === 'development') {
+            console.error(`[ROOM ERROR] ${message}`, { code })
         }
     }
 
+    const clearError = () => {
+        roomError.value = null
+    }
+
+    const debugLog = (message: string, data?: any) => {
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[ROOM] ${message}`, data)
+        }
+    }
+
+    // Reconnection data management
     const getStoredReconnectionData = (): ReconnectionData | null => {
         if (process.client) {
             try {
@@ -67,9 +78,7 @@ export const useRoomStore = defineStore('room', () => {
 
                 return data
             } catch (error) {
-                if (process.client) {
-                    localStorage.removeItem(RECONNECTION_STORAGE_KEY)
-                }
+                localStorage.removeItem(RECONNECTION_STORAGE_KEY)
                 return null
             }
         }
@@ -92,15 +101,51 @@ export const useRoomStore = defineStore('room', () => {
         }
     }
 
+    // Socket event handlers
+    const handleRoomUpdate = (event: RoomUpdateEvent) => {
+        debugLog('Room updated', event)
+
+        if (event.room) {
+            currentRoom.value = event.room
+        }
+
+        if (event.participants) {
+            participants.value = event.participants
+        }
+    }
+
+    const handleParticipantJoined = (participant: Participant) => {
+        debugLog('Participant joined', { participant })
+
+        const existingIndex = participants.value.findIndex(p => p.socketId === participant.socketId)
+        if (existingIndex === -1) {
+            participants.value.push(participant)
+        } else {
+            participants.value[existingIndex] = participant
+        }
+    }
+
+    const handleParticipantLeft = (data: { socketId: string; userName: string }) => {
+        debugLog('Participant left', data)
+
+        participants.value = participants.value.filter(p => p.socketId !== data.socketId)
+    }
+
+    const handleRoomError = (error: { message: string; code?: string }) => {
+        setError(error.message, error.code)
+        roomStatus.value = 'error'
+    }
+
     // Actions
     const createRoom = async (request: CreateRoomRequest): Promise<CreateRoomResponse> => {
         try {
+            isCreatingRoom.value = true
             roomStatus.value = 'creating'
-            roomError.value = null
+            clearError()
 
-            addLog('info', 'Creating room', request)
+            debugLog('Creating room', request)
 
-            const response = await emit<CreateRoomResponse>('create-room', request)
+            const response = await socketStore.emit<CreateRoomResponse>('create-room', request)
 
             if (response.success && response.room) {
                 currentRoom.value = response.room
@@ -115,27 +160,30 @@ export const useRoomStore = defineStore('room', () => {
                     timestamp: Date.now()
                 })
 
-                addLog('success', 'Room created successfully', response)
+                debugLog('Room created successfully', response)
                 return response
             } else {
-                throw new Error(response.error || 'Failed to create room')
+                throw new Error('Failed to create room')
             }
-        } catch (error) {
+        } catch (err) {
+            const error = err as Error
             roomStatus.value = 'error'
-            roomError.value = error instanceof Error ? error.message : 'Unknown error'
-            addLog('error', 'Failed to create room', { error: roomError.value })
+            setError(`Failed to create room: ${error.message}`, 'CREATE_ROOM_FAILED')
             throw error
+        } finally {
+            isCreatingRoom.value = false
         }
     }
 
     const joinRoom = async (request: JoinRoomRequest): Promise<JoinRoomResponse> => {
         try {
+            isJoiningRoom.value = true
             roomStatus.value = 'joining'
-            roomError.value = null
+            clearError()
 
-            addLog('info', 'Joining room', request)
+            debugLog('Joining room', request)
 
-            const response = await emit<JoinRoomResponse>('join-room', request)
+            const response = await socketStore.emit<JoinRoomResponse>('join-room', request)
 
             if (response.success && response.room) {
                 currentRoom.value = response.room
@@ -150,84 +198,164 @@ export const useRoomStore = defineStore('room', () => {
                     timestamp: Date.now()
                 })
 
-                addLog('success', 'Joined room successfully', response)
+                debugLog('Joined room successfully', response)
                 return response
             } else {
-                throw new Error(response.error || 'Failed to join room')
+                throw new Error('Failed to join room')
             }
-        } catch (error) {
+        } catch (err) {
+            const error = err as Error
             roomStatus.value = 'error'
-            roomError.value = error instanceof Error ? error.message : 'Unknown error'
-            addLog('error', 'Failed to join room', { error: roomError.value })
+            setError(`Failed to join room: ${error.message}`, 'JOIN_ROOM_FAILED')
             throw error
+        } finally {
+            isJoiningRoom.value = false
         }
     }
 
-    const leaveRoom = async () => {
+    const reconnectToRoom = async (): Promise<void> => {
+        const reconnectionData = getStoredReconnectionData()
+        if (!reconnectionData) {
+            throw new Error('No reconnection data available')
+        }
+
+        try {
+            isReconnecting.value = true
+            roomStatus.value = 'reconnecting'
+            clearError()
+
+            debugLog('Reconnecting to room', reconnectionData)
+
+            await joinRoom({
+                roomId: reconnectionData.roomId,
+                userName: reconnectionData.userName
+            })
+
+            debugLog('Reconnected successfully')
+        } catch (err) {
+            const error = err as Error
+            setError(`Failed to reconnect: ${error.message}`, 'RECONNECT_FAILED')
+            clearReconnectionData()
+            throw error
+        } finally {
+            isReconnecting.value = false
+        }
+    }
+
+    const leaveRoom = async (): Promise<void> => {
         try {
             if (!currentRoom.value) {
-                addLog('warning', 'No room to leave')
+                debugLog('No room to leave')
                 return
             }
 
-            addLog('info', 'Leaving room', { roomId: currentRoom.value.id })
+            debugLog('Leaving room', { roomId: currentRoom.value.id })
 
-            await emit('leave-room', { roomId: currentRoom.value.id })
+            const leaveData: LeaveRoomRequest = {
+                roomId: currentRoom.value.id
+            }
+
+            await socketStore.emit('leave-room', leaveData)
 
             // Clear state
             currentRoom.value = null
             currentParticipant.value = null
             participants.value = []
             roomStatus.value = 'none'
-            roomError.value = null
-
+            clearError()
             clearReconnectionData()
-            addLog('success', 'Left room successfully')
-        } catch (error) {
-            addLog('error', 'Failed to leave room', { error })
+
+            debugLog('Left room successfully')
+        } catch (err) {
+            const error = err as Error
+            setError(`Failed to leave room: ${error.message}`, 'LEAVE_ROOM_FAILED')
+            throw error
         }
     }
 
-    const handleRoomUpdate = (event: RoomUpdateEvent) => {
-        addLog('info', 'Room updated', event)
-
-        if (event.room) {
-            currentRoom.value = event.room
-        }
-
-        if (event.participants) {
-            participants.value = event.participants
+    // Update participant media status
+    const updateParticipantMediaStatus = (socketId: string, mediaStatus: Participant['mediaStatus']) => {
+        const participant = participants.value.find(p => p.socketId === socketId)
+        if (participant) {
+            participant.mediaStatus = mediaStatus
         }
     }
 
-    // Setup event listeners
+    // Setup and cleanup
     const setupEventListeners = () => {
-        on('room-updated', handleRoomUpdate)
+        debugLog('Setting up room event listeners')
+
+        socketStore.on('room-updated', handleRoomUpdate)
+        socketStore.on('participant-joined', handleParticipantJoined)
+        socketStore.on('participant-left', handleParticipantLeft)
+        socketStore.on('room-error', handleRoomError)
+
+        debugLog('Room event listeners configured')
     }
 
     const cleanup = () => {
-        off('room-updated', handleRoomUpdate)
+        debugLog('Cleaning up room store')
+
+        socketStore.off('room-updated', handleRoomUpdate)
+        socketStore.off('participant-joined', handleParticipantJoined)
+        socketStore.off('participant-left', handleParticipantLeft)
+        socketStore.off('room-error', handleRoomError)
 
         currentRoom.value = null
         currentParticipant.value = null
         participants.value = []
         roomStatus.value = 'none'
-        roomError.value = null
+        clearError()
+        isCreatingRoom.value = false
+        isJoiningRoom.value = false
+        isReconnecting.value = false
     }
 
-    // Computed
-    const isInRoom = computed(() => !!currentRoom.value)
+    // Computed properties
+    const isInRoom = computed(() => !!currentRoom.value && roomStatus.value === 'connected')
+
     const isRoomCreator = computed(() =>
+        currentParticipant.value?.isCreator ||
         currentParticipant.value?.socketId === currentRoom.value?.createdBy
     )
+
     const participantCount = computed(() => participants.value.length)
+
     const connectedParticipants = computed(() =>
         participants.value.filter(p => p.isConnected)
     )
+
     const connectedParticipantCount = computed(() => connectedParticipants.value.length)
 
+    const otherParticipants = computed(() =>
+        participants.value.filter(p =>
+            p.isConnected && p.socketId !== currentParticipant.value?.socketId
+        )
+    )
+
     const hasReconnectionData = computed(() => !!getStoredReconnectionData())
+
     const reconnectionData = computed(() => getStoredReconnectionData())
+
+    // Loading and state checks
+    const isLoading = computed(() =>
+        isCreatingRoom.value || isJoiningRoom.value || isReconnecting.value
+    )
+
+    const canCreateRoom = computed(() =>
+        roomStatus.value === 'none' && socketStore.isConnected
+    )
+
+    const canJoinRoom = computed(() =>
+        roomStatus.value === 'none' && socketStore.isConnected
+    )
+
+    const canLeaveRoom = computed(() => isInRoom.value)
+
+    const hasError = computed(() => !!roomError.value)
+
+    // Initialize event listeners
+    setupEventListeners()
 
     return {
         // State
@@ -236,23 +364,38 @@ export const useRoomStore = defineStore('room', () => {
         participants: readonly(participants),
         roomStatus: readonly(roomStatus),
         roomError: readonly(roomError),
-        logs: readonly(logs),
 
-        // Computed
+        // Loading states (required by index.vue)
+        isCreatingRoom: readonly(isCreatingRoom),
+        isJoiningRoom: readonly(isJoiningRoom),
+        isReconnecting: readonly(isReconnecting),
+
+        // Computed properties
         isInRoom,
         isRoomCreator,
         participantCount,
         connectedParticipants,
         connectedParticipantCount,
+        otherParticipants,
         hasReconnectionData,
         reconnectionData,
+        isLoading,
+        canCreateRoom,
+        canJoinRoom,
+        canLeaveRoom,
+        hasError,
 
         // Actions
         createRoom,
         joinRoom,
+        reconnectToRoom,
         leaveRoom,
-        setupEventListeners,
+        updateParticipantMediaStatus,
+        clearError,
+        clearReconnectionData,
         cleanup,
-        clearReconnectionData
+
+        // Development utilities
+        ...(process.env.NODE_ENV === 'development' && { debugLog })
     }
 })

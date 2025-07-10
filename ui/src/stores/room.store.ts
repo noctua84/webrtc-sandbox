@@ -631,6 +631,10 @@ class RoomStore {
         return this.participants.filter(p => p.isConnected);
     }
 
+    get connectedParticipantCount(): number {
+        return this.connectedParticipants.length;
+    }
+
     get otherParticipants(): Participant[] {
         return this.participants.filter(p =>
             p.isConnected && p.socketId !== this.currentParticipant?.socketId

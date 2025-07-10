@@ -16,7 +16,8 @@
     "install:server": "cd server && npm install"
   },
   "devDependencies": {
-    "concurrently": "8.2.2"
+    "concurrently": "8.2.2",
+    "sass-embedded": "^1.89.2"
   },
   "dependencies": {
     "typescript": "5.8.3"

@@ -107,10 +107,15 @@
 </template>
 
 <script setup lang="ts">
-import {useWebRTCStore} from "../stores/webrtc";
-import {useRoomStore} from "../stores/room";
+import {useWebRTCStore} from "~/stores/webrtc";
+import {useRoomStore} from "~/stores/room";
 import {ref, computed, watch, onBeforeUnmount} from 'vue'
-import {definePageMeta} from "nuxt/dist/pages/runtime";
+import RoomForm from "../components/RoomForm.vue";
+import MediaControls from "../components/MediaControls.vue";
+import VideoGrid from "../components/VideoGrid.vue";
+import ConnectionStatus from "../components/ConnectionStatus.vue";
+import ChatComponent from "../components/ChatComponent.vue";
+import RoomInfo from "../components/RoomInfo.vue";
 
 // Page meta
 definePageMeta({

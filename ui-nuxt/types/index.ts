@@ -1,5 +1,4 @@
-// types/index.ts
-import type {MediaStatus} from "./webrtc.types";
+import type {Participant, Room} from "./room.types";
 
 // ============================================================================
 // CONNECTION TYPES
@@ -11,82 +10,6 @@ export interface ReconnectionData {
     roomId: string
     userName: string
     timestamp: number
-}
-
-// ============================================================================
-// ROOM TYPES
-// ============================================================================
-
-export type RoomStatus = 'none' | 'creating' | 'joining' | 'connected' | 'error'
-
-export interface Room {
-    id: string
-    name: string
-    createdAt: string
-    createdBy: string
-    maxParticipants: number
-    isActive: boolean
-}
-
-export interface Participant {
-    socketId: string
-    userName: string
-    joinedAt: string
-    isConnected: boolean
-    mediaStatus: MediaStatus
-}
-
-export interface CreateRoomRequest {
-    userName: string
-    roomName?: string
-    maxParticipants?: number
-}
-
-export interface CreateRoomResponse {
-    room: Room
-    participant: Participant
-    error?: string
-    success: boolean
-}
-
-export interface JoinRoomRequest {
-    roomId: string
-    userName: string
-}
-
-export interface JoinRoomResponse {
-    room: Room
-    participant: Participant
-    participants: Participant[]
-    error?: string
-    success: boolean
-}
-
-// ============================================================================
-// CHAT TYPES
-// ============================================================================
-
-export interface ChatMessage {
-    id: string
-    roomId: string
-    senderId: string
-    senderName: string
-    content: string
-    timestamp: string
-    type: 'text' | 'system' | 'emoji'
-    edited?: boolean
-    editedAt?: string
-}
-
-export interface SendMessageRequest {
-    roomId: string
-    content: string
-    type?: 'text' | 'emoji'
-}
-
-export interface TypingIndicatorRequest {
-    roomId: string
-    isTyping: boolean
 }
 
 // ============================================================================

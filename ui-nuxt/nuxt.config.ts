@@ -1,10 +1,16 @@
-// nuxt.config.ts
+import vuetify from 'vite-plugin-vuetify'
+
 export default defineNuxtConfig({
     devtools: { enabled: true },
 
     modules: [
         '@pinia/nuxt',
-        '@vueuse/nuxt'
+        '@vueuse/nuxt',
+        (_options, nuxt) => {
+            nuxt.hooks.hook('vite:extendConfig', (config) => {
+                config?.plugins?.push(vuetify({autoImport: true}))
+            })
+        },
     ],
 
     css: [

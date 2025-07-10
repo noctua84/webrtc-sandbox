@@ -2,7 +2,7 @@
 import { io, Socket } from 'socket.io-client'
 import { ref, computed, readonly } from 'vue'
 import { useRuntimeConfig } from '#imports'
-import type {ConnectionStatus, LogEntry, LogLevel, LogData} from "../types";
+import type {ConnectionStatus, LogEntry, LogLevel, LogData} from "~/types";
 
 const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEntry => ({
     id: Date.now() + Math.random(),

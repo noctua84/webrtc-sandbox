@@ -116,9 +116,9 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         }
 
         // Handle ICE candidates
-        connection.onicecandidate = (event) => {
+        connection.onicecandidate = async (event) => {
             if (event.candidate && roomStore.currentRoom) {
-                emit('ice-candidate', {
+                await emit('ice-candidate', {
                     targetSocketId: participantId,
                     candidate: event.candidate,
                     roomId: roomStore.currentRoom.id
@@ -135,20 +135,20 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         }
 
         // Handle connection state changes
-        connection.onconnectionstatechange = () => {
+        connection.onconnectionstatechange = async () => {
             const state = connection.connectionState
 
             if (state === 'connected') {
                 connectionRetryAttempts.value.delete(participantId)
             } else if (state === 'failed' || state === 'disconnected') {
-                handleConnectionFailure(participantId, userName)
+                await handleConnectionFailure(participantId, userName)
             }
         }
 
         // Handle ICE connection state changes
-        connection.oniceconnectionstatechange = () => {
+        connection.oniceconnectionstatechange = async () => {
             if (connection.iceConnectionState === 'failed') {
-                handleConnectionFailure(participantId, userName)
+                await handleConnectionFailure(participantId, userName)
             }
         }
 
@@ -255,7 +255,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         }
     }
 
-    const startScreenShare = async (): Promise<void> => {
+    const startScreenShare = async () => {
         try {
             isConnecting.value = true
 
@@ -278,7 +278,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
                 stopScreenShare()
             })
 
-            updateMediaStatus()
+            await updateMediaStatus()
 
             // Update all peer connections with new stream
             peerConnections.value.forEach(async (peer) => {
@@ -297,7 +297,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         }
     }
 
-    const stopScreenShare = async (): Promise<void> => {
+    const stopScreenShare = async () => {
         if (!isScreenSharing.value) return
 
         try {
@@ -308,7 +308,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         }
     }
 
-    const stopMedia = (): void => {
+    const stopMedia = async () => {
         if (localStream.value) {
             localStream.value.getTracks().forEach(track => track.stop())
             localStream.value = null
@@ -318,36 +318,36 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         hasAudio.value = false
         isScreenSharing.value = false
 
-        updateMediaStatus()
+        await updateMediaStatus()
         cleanup()
     }
 
-    const toggleVideo = (): void => {
+    const toggleVideo = async () => {
         if (!localStream.value) return
 
         const videoTrack = localStream.value.getVideoTracks()[0]
         if (videoTrack) {
             videoTrack.enabled = !videoTrack.enabled
             hasVideo.value = videoTrack.enabled
-            updateMediaStatus()
+            await updateMediaStatus()
         }
     }
 
-    const toggleAudio = (): void => {
+    const toggleAudio = async () => {
         if (!localStream.value) return
 
         const audioTrack = localStream.value.getAudioTracks()[0]
         if (audioTrack) {
             audioTrack.enabled = !audioTrack.enabled
             hasAudio.value = audioTrack.enabled
-            updateMediaStatus()
+            await updateMediaStatus()
         }
     }
 
-    const updateMediaStatus = (): void => {
+    const updateMediaStatus = async () => {
         if (!roomStore.currentRoom) return
 
-        emit('media-status-update', {
+        await emit('media-status-update', {
             roomId: roomStore.currentRoom.id,
             hasVideo: hasVideo.value,
             hasAudio: hasAudio.value,
@@ -438,7 +438,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
             const answer = await connection.createAnswer()
             await connection.setLocalDescription(answer)
 
-            emit('webrtc-answer', {
+            await emit('webrtc-answer', {
                 targetSocketId: data.senderSocketId,
                 answer,
                 roomId: data.roomId
