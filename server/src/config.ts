@@ -7,7 +7,9 @@ export const SERVER_CONFIG = {
 
     // CORS Configuration
     CORS: {
-        ORIGIN: process.env.CORS_ORIGIN || 'http://localhost:5173',
+        ORIGIN: process.env.CORS_ORIGIN ?
+            process.env.CORS_ORIGIN.split(',') :
+            ['http://localhost:5173', 'http://localhost:3000'],
         METHODS: ['GET', 'POST'],
         CREDENTIALS: true
     },

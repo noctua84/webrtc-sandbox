@@ -1,6 +1,7 @@
-// ui-nuxt/stores/room.ts - Fixed reconnection token implementation
-
+// stores/room.ts - Room business logic and state management
 import { defineStore } from 'pinia'
+import { ref, computed, readonly, watch } from 'vue'
+import { useSocket } from '~/composables/useSocket'
 import type {
     Room,
     Participant,
@@ -16,14 +17,12 @@ import type {
     RoomUpdateEvent,
     ReconnectionData
 } from '~/types/room.types'
-import {useSocket} from "~/composables/useSocket"
-import { ref, computed, readonly } from 'vue'
 
 const RECONNECTION_STORAGE_KEY = 'webrtc-reconnection-data'
 const RECONNECTION_EXPIRY_MS = 5 * 60 * 1000
 
 export const useRoomStore = defineStore('room', () => {
-    // State
+    // Room-specific state
     const currentRoom = ref<Room | null>(null)
     const currentParticipant = ref<Participant | null>(null)
     const participants = ref<Participant[]>([])
@@ -34,9 +33,10 @@ export const useRoomStore = defineStore('room', () => {
     const isCreatingRoom = ref(false)
     const isJoiningRoom = ref(false)
     const isReconnecting = ref(false)
+    const isInitialized = ref(false)
 
-    // Dependencies
-    const socketStore = useSocket()
+    // Get socket composable for communication
+    const socketStore = useSocket({ autoConnect: true })
 
     // Utility functions
     const setError = (message: string, code?: string) => {
@@ -45,10 +45,7 @@ export const useRoomStore = defineStore('room', () => {
             code,
             timestamp: new Date().toISOString()
         }
-
-        if (process.env.NODE_ENV === 'development') {
-            console.error(`[ROOM ERROR] ${message}`, { code })
-        }
+        socketStore.addLog('error', `[ROOM] ${message}`, { code })
     }
 
     const clearError = () => {
@@ -57,300 +54,329 @@ export const useRoomStore = defineStore('room', () => {
 
     const debugLog = (message: string, data?: any) => {
         if (process.env.NODE_ENV === 'development') {
-            console.log(`[ROOM] ${message}`, data)
+            socketStore.addLog('info', `[ROOM] ${message}`, data)
         }
     }
 
+    // Reconnection data management
     const getStoredReconnectionData = (): ReconnectionData | null => {
-        if (import.meta.client) {
-            try {
-                const stored = localStorage.getItem(RECONNECTION_STORAGE_KEY)
-                if (!stored) return null
+        if (!process.client) return null
 
-                const data: ReconnectionData = JSON.parse(stored)
-                const now = Date.now()
-                const age = now - data.timestamp
+        try {
+            const stored = localStorage.getItem(RECONNECTION_STORAGE_KEY)
+            if (!stored) return null
 
-                if (age > RECONNECTION_EXPIRY_MS) {
-                    localStorage.removeItem(RECONNECTION_STORAGE_KEY)
-                    return null
-                }
+            const data: ReconnectionData = JSON.parse(stored)
+            const now = Date.now()
+            const age = now - data.timestamp
 
-                return data
-            } catch (error) {
+            if (age > RECONNECTION_EXPIRY_MS) {
                 localStorage.removeItem(RECONNECTION_STORAGE_KEY)
                 return null
             }
+
+            return data
+        } catch (error) {
+            localStorage.removeItem(RECONNECTION_STORAGE_KEY)
+            return null
         }
-        return null
     }
 
     const storeReconnectionData = (data: ReconnectionData) => {
-        if (import.meta.client) {
-            try {
-                localStorage.setItem(RECONNECTION_STORAGE_KEY, JSON.stringify(data))
-            } catch (error) {
-                console.warn('Failed to store reconnection data:', error)
-            }
+        if (!process.client) return
+
+        try {
+            localStorage.setItem(RECONNECTION_STORAGE_KEY, JSON.stringify(data))
+            debugLog('Reconnection data stored', { roomId: data.roomId, userName: data.userName })
+        } catch (error) {
+            debugLog('Failed to store reconnection data', error)
         }
     }
 
     const clearReconnectionData = () => {
-        if (import.meta.client) {
-            localStorage.removeItem(RECONNECTION_STORAGE_KEY)
-        }
+        if (!process.client) return
+
+        localStorage.removeItem(RECONNECTION_STORAGE_KEY)
+        debugLog('Reconnection data cleared')
     }
 
-    // 🔧 FIXED: Store method that the component can access
-    const getReconnectionData = (): ReconnectionData | null => {
-        return getStoredReconnectionData()
+    // Room state management
+    const updateRoomState = (response: CreateRoomResponse | JoinRoomResponse | ReconnectRoomResponse) => {
+        currentRoom.value = response.room
+        currentParticipant.value = response.participant
+        participants.value = 'participants' in response ? response.participants || [response.participant] : [response.participant]
+        roomStatus.value = 'connected'
+
+        // Reset loading states
+        isCreatingRoom.value = false
+        isJoiningRoom.value = false
+        isReconnecting.value = false
+
+        // Store reconnection data
+        if (response.reconnectionToken) {
+            storeReconnectionData({
+                roomId: response.room.id,
+                reconnectionToken: response.reconnectionToken,
+                userName: response.participant.userName,
+                timestamp: Date.now()
+            })
+        }
+
+        debugLog('Room state updated', {
+            roomId: response.room.id,
+            participantCount: participants.value.length,
+            isCreator: response.participant.isCreator
+        })
     }
 
-    // Actions
-    const createRoom = async (userName: string): Promise<CreateRoomResponse> => {
-        try {
-            isCreatingRoom.value = true
-            roomStatus.value = 'creating'
-            clearError()
-
-            debugLog('Creating room', { userName })
-
-            const request: CreateRoomRequest = {
-                userName: userName.trim()
-            }
-
-            const response = await socketStore.emit<CreateRoomResponse>('create-room', request)
-
-            if (response.success && response.room) {
-                currentRoom.value = response.room
-                currentParticipant.value = response.participant
-                participants.value = [response.participant]
-                roomStatus.value = 'connected'
-
-                storeReconnectionData({
-                    roomId: response.room.id,
-                    reconnectionToken: response.reconnectionToken, // ✅ Now included
-                    userName: userName.trim(),
-                    timestamp: Date.now()
-                })
-
-                debugLog('Room created successfully', response)
-                return response
-            } else {
-                throw new Error('Failed to create room')
-            }
-        } catch (err) {
-            const error = err as Error
-            roomStatus.value = 'error'
-            setError(`Failed to create room: ${error.message}`, 'CREATE_ROOM_FAILED')
-
-            throw error
-        } finally {
-            isCreatingRoom.value = false
-        }
-    }
-
-    const joinRoom = async (roomId: string, userName: string): Promise<JoinRoomResponse> => {
-        try {
-            isJoiningRoom.value = true
-            roomStatus.value = 'joining'
-            clearError()
-
-            debugLog('Joining room', { roomId, userName })
-
-            const request: JoinRoomRequest = {
-                roomId: roomId.trim(),
-                userName: userName.trim()
-            }
-
-            const response = await socketStore.emit<JoinRoomResponse>('join-room', request)
-
-            if (response.success && response.room) {
-                currentRoom.value = response.room
-                currentParticipant.value = response.participant
-                participants.value = response.participants || []
-                roomStatus.value = 'connected'
-
-                storeReconnectionData({
-                    roomId: roomId.trim(),
-                    reconnectionToken: response.reconnectionToken, // ✅ Now included
-                    userName: userName.trim(),
-                    timestamp: Date.now()
-                })
-
-                debugLog('Joined room successfully', response)
-                return response
-            } else {
-                throw new Error('Failed to join room')
-            }
-        } catch (err) {
-            const error = err as Error
-            roomStatus.value = 'error'
-            setError(`Failed to join room: ${error.message}`, 'JOIN_ROOM_FAILED')
-            throw error
-        } finally {
-            isJoiningRoom.value = false
-        }
-    }
-
-    const reconnectToRoom = async (
-        roomId: string,
-        reconnectionToken: string,
-        userName: string
-    ): Promise<ReconnectRoomResponse> => {
-        try {
-            isReconnecting.value = true
-            roomStatus.value = 'reconnecting'
-            clearError()
-
-            debugLog('Reconnecting to room', { roomId, userName })
-
-            const request: ReconnectRoomRequest = {
-                roomId,
-                reconnectionToken
-            }
-
-            const response = await socketStore.emit<ReconnectRoomResponse>('reconnect-room', request)
-
-            if (response.success && response.room) {
-                currentRoom.value = response.room
-                currentParticipant.value = response.participant
-                participants.value = response.participants || []
-                roomStatus.value = 'connected'
-
-                // Update stored reconnection data timestamp
-                storeReconnectionData({
-                    roomId,
-                    reconnectionToken,
-                    userName,
-                    timestamp: Date.now()
-                })
-
-                debugLog('Reconnected successfully', response)
-                return response
-            } else {
-                throw new Error(response.error || 'Failed to reconnect to room')
-            }
-        } catch (err) {
-            const error = err as Error
-            roomStatus.value = 'error'
-            setError(`Failed to reconnect: ${error.message}`, 'RECONNECT_FAILED')
-            clearReconnectionData()
-            throw error
-        } finally {
-            isReconnecting.value = false
-        }
-    }
-
-    const leaveRoom = async (): Promise<void> => {
-        try {
-            if (!currentRoom.value) {
-                debugLog('No room to leave')
-                return
-            }
-
-            debugLog('Leaving room', { roomId: currentRoom.value.id })
-
-            const leaveData: LeaveRoomRequest = {
-                roomId: currentRoom.value.id
-            }
-
-            await socketStore.emit('leave-room', leaveData)
-
-            // Clear state
-            currentRoom.value = null
-            currentParticipant.value = null
-            participants.value = []
-            roomStatus.value = 'none'
-            clearError()
-            clearReconnectionData()
-
-            debugLog('Left room successfully')
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to leave room: ${error.message}`, 'LEAVE_ROOM_FAILED')
-            throw error
-        }
+    const resetRoomState = () => {
+        currentRoom.value = null
+        currentParticipant.value = null
+        participants.value = []
+        roomStatus.value = 'none'
+        isCreatingRoom.value = false
+        isJoiningRoom.value = false
+        isReconnecting.value = false
+        clearError()
+        debugLog('Room state reset')
     }
 
     // Socket event handlers
     const handleRoomUpdate = (event: RoomUpdateEvent) => {
-        debugLog('Room updated', event)
+        debugLog('Room update received', event)
 
-        // 🔧 FIXED: RoomUpdateEvent doesn't have a 'room' field
-        // Update participants from the event
+        if (!currentRoom.value || event.roomId !== currentRoom.value.id) {
+            debugLog('Ignoring update for different room', {
+                currentRoomId: currentRoom.value?.id,
+                eventRoomId: event.roomId
+            })
+            return
+        }
+
+        // Update participants list
         if (event.participants) {
             participants.value = event.participants
         }
 
-        // Handle specific event types
-        if (event.event === 'participant-joined' && event.participant) {
-            debugLog('Participant joined', { participant: event.participant })
-        } else if (event.event === 'participant-left' && event.leftParticipantId) {
-            debugLog('Participant left', { leftParticipantId: event.leftParticipantId })
+        // Update room info
+        if (currentRoom.value) {
+            currentRoom.value.participantCount = participants.value.length
+            currentRoom.value.lastActivity = new Date().toISOString()
+        }
+
+        debugLog(`Room updated: ${event.event}`, {
+            participantCount: participants.value.length,
+            eventType: event.event
+        })
+    }
+
+    const handleDisconnection = () => {
+        debugLog('Socket disconnected - preserving room state for reconnection')
+        roomStatus.value = 'error'
+        setError('Connection lost', 'CONNECTION_LOST')
+    }
+
+    // Initialize socket and register event listeners
+    const initializeSocket = async () => {
+        if (isInitialized.value) {
+            debugLog('Socket already initialized')
+            return
+        }
+
+        debugLog('Initializing socket and room event listeners')
+
+        try {
+            // Initialize socket connection
+            await socketStore.initialize()
+
+            // Register room-specific event listeners
+            socketStore.on('room-updated', handleRoomUpdate)
+            socketStore.on('disconnect', handleDisconnection)
+
+            // Additional room events can be added here
+            // socketStore.on('participant-joined', handleParticipantJoined)
+            // socketStore.on('participant-left', handleParticipantLeft)
+
+            isInitialized.value = true
+            debugLog('Room store initialized successfully')
+
+        } catch (error) {
+            debugLog('Failed to initialize socket', error)
+            setError('Failed to initialize connection', 'SOCKET_INIT_FAILED')
+            throw error
         }
     }
 
-    const handleParticipantJoined = (participant: Participant) => {
-        debugLog('Participant joined', { participant })
+    // Business logic methods
+    const createRoom = async (userName: string): Promise<CreateRoomResponse> => {
+        if (!userName.trim()) {
+            const error = 'Username is required to create a room'
+            setError(error, 'VALIDATION_ERROR')
+            throw new Error(error)
+        }
 
-        const existingIndex = participants.value.findIndex(p => p.socketId === participant.socketId)
-        if (existingIndex === -1) {
-            participants.value.push(participant)
-        } else {
-            participants.value[existingIndex] = participant
+        // Ensure socket is initialized
+        if (!isInitialized.value) {
+            await initializeSocket()
+        }
+
+        isCreatingRoom.value = true
+        roomStatus.value = 'creating'
+        clearError()
+
+        debugLog('Creating room', { userName })
+
+        try {
+            const request: CreateRoomRequest = { userName: userName.trim() }
+            const response = await socketStore.emit<CreateRoomResponse>('create-room', request)
+
+            if (response.success) {
+                updateRoomState(response)
+                debugLog('Room created successfully', { roomId: response.room.id })
+                return response
+            } else {
+                throw new Error(response.error || 'Failed to create room')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setError(`Failed to create room: ${errorMessage}`, 'CREATE_ROOM_FAILED')
+            isCreatingRoom.value = false
+            roomStatus.value = 'error'
+            throw error
         }
     }
 
-    const handleParticipantLeft = (data: { socketId: string; userName: string }) => {
-        debugLog('Participant left', data)
+    const joinRoom = async (roomId: string, userName: string): Promise<JoinRoomResponse> => {
+        if (!roomId.trim() || !userName.trim()) {
+            const error = 'Room ID and username are required'
+            setError(error, 'VALIDATION_ERROR')
+            throw new Error(error)
+        }
 
-        participants.value = participants.value.filter(p => p.socketId !== data.socketId)
+        if (!isInitialized.value) {
+            await initializeSocket()
+        }
+
+        isJoiningRoom.value = true
+        roomStatus.value = 'joining'
+        clearError()
+
+        debugLog('Joining room', { roomId, userName })
+
+        try {
+            const request: JoinRoomRequest = {
+                roomId: roomId.trim(),
+                userName: userName.trim()
+            }
+            const response = await socketStore.emit<JoinRoomResponse>('join-room', request)
+
+            if (response.success) {
+                updateRoomState(response)
+                debugLog('Joined room successfully', { roomId: response.room.id })
+                return response
+            } else {
+                throw new Error(response.error || 'Failed to join room')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setError(`Failed to join room: ${errorMessage}`, 'JOIN_ROOM_FAILED')
+            isJoiningRoom.value = false
+            roomStatus.value = 'error'
+            throw error
+        }
     }
 
-    const handleRoomError = (error: { message: string; code?: string }) => {
-        debugLog('Room error', error)
-        setError(error.message, error.code)
+    const reconnectToRoom = async (roomId: string, reconnectionToken: string, userName: string): Promise<ReconnectRoomResponse> => {
+        if (!isInitialized.value) {
+            await initializeSocket()
+        }
+
+        isReconnecting.value = true
+        roomStatus.value = 'reconnecting'
+        clearError()
+
+        debugLog('Reconnecting to room', { roomId, userName })
+
+        try {
+            const request: ReconnectRoomRequest = { roomId, reconnectionToken }
+            const response = await socketStore.emit<ReconnectRoomResponse>('reconnect-room', request)
+
+            if (response.success) {
+                updateRoomState(response)
+                debugLog('Reconnected successfully', { roomId: response.room.id })
+                return response
+            } else {
+                throw new Error(response.error || 'Failed to reconnect to room')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setError(`Failed to reconnect: ${errorMessage}`, 'RECONNECT_FAILED')
+            isReconnecting.value = false
+            roomStatus.value = 'error'
+            clearReconnectionData()
+            throw error
+        }
     }
 
-    // Event listener setup
-    const setupEventListeners = () => {
-        debugLog('Setting up event listeners')
+    const leaveRoom = async (): Promise<void> => {
+        if (!currentRoom.value) {
+            debugLog('No room to leave')
+            return
+        }
 
-        socketStore.on('room-updated', handleRoomUpdate)
-        socketStore.on('participant-joined', handleParticipantJoined)
-        socketStore.on('participant-left', handleParticipantLeft)
-        socketStore.on('room-error', handleRoomError)
+        debugLog('Leaving room', { roomId: currentRoom.value.id })
+
+        try {
+            const request: LeaveRoomRequest = { roomId: currentRoom.value.id }
+            await socketStore.emit('leave-room', request)
+
+            resetRoomState()
+            clearReconnectionData()
+            debugLog('Left room successfully')
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setError(`Failed to leave room: ${errorMessage}`, 'LEAVE_ROOM_FAILED')
+            throw error
+        }
     }
+
+    // Auto-reconnection on socket reconnection
+    watch(() => socketStore.isConnected, async (isConnected) => {
+        if (isConnected && roomStatus.value === 'error') {
+            const reconnectionData = getStoredReconnectionData()
+            if (reconnectionData) {
+                debugLog('Socket reconnected, attempting to rejoin room')
+                try {
+                    await reconnectToRoom(
+                        reconnectionData.roomId,
+                        reconnectionData.reconnectionToken,
+                        reconnectionData.userName
+                    )
+                } catch (error) {
+                    debugLog('Auto-reconnection failed', error)
+                }
+            }
+        }
+    })
 
     // Computed properties
     const isInRoom = computed(() => roomStatus.value === 'connected')
-
-    const isRoomCreator = computed(() =>
-        !!currentParticipant.value?.isCreator
-    )
-
+    const isRoomCreator = computed(() => !!currentParticipant.value?.isCreator)
     const participantCount = computed(() => participants.value.length)
 
     const connectedParticipants = computed(() =>
         participants.value.filter(p => p.isConnected)
     )
 
-    const connectedParticipantCount = computed(() =>
-        connectedParticipants.value.length
-    )
+    const connectedParticipantCount = computed(() => connectedParticipants.value.length)
 
     const otherParticipants = computed(() =>
         participants.value.filter(p => p.socketId !== currentParticipant.value?.socketId)
     )
 
-    const hasReconnectionData = computed(() =>
-        getStoredReconnectionData() !== null
-    )
-
+    const hasReconnectionData = computed(() => !!getStoredReconnectionData())
     const reconnectionData = computed(() => getStoredReconnectionData())
 
-    // Loading and state checks
     const isLoading = computed(() =>
         isCreatingRoom.value || isJoiningRoom.value || isReconnecting.value
     )
@@ -364,21 +390,20 @@ export const useRoomStore = defineStore('room', () => {
     )
 
     const canLeaveRoom = computed(() => isInRoom.value)
-
     const hasError = computed(() => !!roomError.value)
 
-    // Initialize event listeners
-    setupEventListeners()
+    // Expose methods for external access
+    const getReconnectionData = () => getStoredReconnectionData()
 
     return {
-        // State
+        // State (readonly)
         currentRoom: readonly(currentRoom),
         currentParticipant: readonly(currentParticipant),
         participants: readonly(participants),
         roomStatus: readonly(roomStatus),
         roomError: readonly(roomError),
 
-        // Loading states (required by index.vue)
+        // Loading states (readonly)
         isCreatingRoom: readonly(isCreatingRoom),
         isJoiningRoom: readonly(isJoiningRoom),
         isReconnecting: readonly(isReconnecting),
@@ -405,9 +430,11 @@ export const useRoomStore = defineStore('room', () => {
         leaveRoom,
         clearError,
         clearReconnectionData,
-
-        // 🔧 FIXED: Expose getReconnectionData method for component access
         getReconnectionData,
+
+        // Initialization
+        initializeSocket,
+        isInitialized: readonly(isInitialized),
 
         // Development utilities
         ...(process.env.NODE_ENV === 'development' && { debugLog })

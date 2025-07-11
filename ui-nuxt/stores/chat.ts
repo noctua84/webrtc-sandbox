@@ -1,613 +1,350 @@
-// stores/chat.store.ts
+// stores/chat.ts - Chat business logic separation
 import { defineStore } from 'pinia'
-import { ref, computed } from 'vue'
+import { ref, computed, readonly } from 'vue'
 import { useSocket } from '~/composables/useSocket'
-import { useRoomStore } from './room'
+import { useRoomStore } from '~/stores/room'
 import type {
     ChatMessage,
-    MessageReaction,
-    DeleteMessageRequest,
-    DeleteMessageResponse,
-    EditMessageRequest,
-    SendMessageResponse,
-    EditMessageResponse,
-    AddReactionRequest,
-    RemoveReactionRequest,
     SendMessageRequest,
-    SystemMessageType,
+    SendMessageResponse,
+    EditMessageRequest,
+    DeleteMessageRequest,
     TypingIndicatorRequest,
-    ChatParticipant,
-    ChatError,
+    ChatError
 } from '~/types/chat.types'
 
 export const useChatStore = defineStore('chat', () => {
-    // State
+    // Chat-specific state
     const messages = ref<ChatMessage[]>([])
-    const participants = ref<ChatParticipant[]>([])
-    const typingUsers = ref(new Set<string>())
-    const isLoading = ref(false)
-    const error = ref<ChatError | null>(null)
-    const hasLoadedHistory = ref(false)
+    const chatError = ref<ChatError | null>(null)
+    const isTyping = ref<string[]>([]) // Array of user names who are typing
+    const isSendingMessage = ref(false)
+    const isInitialized = ref(false)
 
-    // Timeout for typing indicators
-    let typingTimeout: NodeJS.Timeout | null = null
-    let lastTypingTime = 0
-
-    // Dependencies
+    // Get dependencies
     const socketStore = useSocket()
     const roomStore = useRoomStore()
 
-    // Computed
-    const hasMessages = computed(() => messages.value.length > 0)
-
-    const canSendMessage = computed(() =>
-        roomStore.isInRoom && !isLoading.value
-    )
-
-    const shouldShowLoading = computed(() =>
-        isLoading.value && messages.value.length === 0
-    )
-
-    const lastMessage = computed(() =>
-        messages.value.length > 0 ? messages.value[messages.value.length - 1] : null
-    )
-
-    const mentionNotifications = computed(() => {
-        if (!roomStore.currentParticipant) return []
-
-        return messages.value.filter(message =>
-            message.mentions?.includes(roomStore.currentParticipant!.socketId) &&
-            message.senderId !== roomStore.currentParticipant!.socketId
-        )
-    })
-
-    // Production logging utility
-    const setError = (message: string, code?: string) => {
-        error.value = {
+    // Utility functions
+    const setChatError = (message: string, code?: string) => {
+        chatError.value = {
             message,
             code,
             timestamp: new Date().toISOString()
         }
-
-        // Only log errors in development or with proper error tracking service
-        if (process.env.NODE_ENV === 'development') {
-            console.error(`[CHAT ERROR] ${message}`, { code, timestamp: error.value.timestamp })
-        }
-        // In production, you would send to error tracking service (Sentry, etc.)
+        socketStore.addLog('error', `[CHAT] ${message}`, { code })
     }
 
-    const clearError = () => {
-        error.value = null
+    const clearChatError = () => {
+        chatError.value = null
     }
 
     const debugLog = (message: string, data?: any) => {
-        // Only log debug info in development
         if (process.env.NODE_ENV === 'development') {
-            console.log(`[CHAT] ${message}`, data)
+            socketStore.addLog('info', `[CHAT] ${message}`, data)
         }
     }
 
-    // Helper functions
-    const createSystemMessage = (
-        type: SystemMessageType,
-        userName: string,
-        roomId: string
-    ): ChatMessage => {
-        const messageMap = {
-            'participant-joined': `${userName} joined the room`,
-            'participant-left': `${userName} left the room`,
-            'host-joined': `${userName} joined as host`,
-            'host-left': `${userName} left (was host)`,
-            'host-changed': `${userName} is now the host`,
-            'room-created': `Room created by ${userName}`
+    // Socket event handlers
+    const handleNewMessage = (message: ChatMessage) => {
+        debugLog('New message received', { messageId: message.id, sender: message.senderName })
+
+        // Add message to local state
+        messages.value.push(message)
+
+        // Remove typing indicator for sender
+        const typingIndex = isTyping.value.indexOf(message.senderName)
+        if (typingIndex > -1) {
+            isTyping.value.splice(typingIndex, 1)
         }
 
-        return {
-            id: `system-${Date.now()}-${Math.random()}`,
-            roomId,
-            senderId: 'system',
-            senderName: 'System',
-            content: messageMap[type] || `System: ${type}`,
-            timestamp: new Date().toISOString(),
-            type: 'system'
+        // Sort messages by timestamp to ensure correct order
+        messages.value.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+    }
+
+    const handleMessageEdited = (editedMessage: ChatMessage) => {
+        debugLog('Message edited', { messageId: editedMessage.id })
+
+        const index = messages.value.findIndex(m => m.id === editedMessage.id)
+        if (index > -1) {
+            messages.value[index] = editedMessage
         }
     }
 
-    const parseMentions = (content: string): string[] => {
-        const mentionRegex = /@(\w+)/g
-        const mentions: string[] = []
-        let match
+    const handleMessageDeleted = (messageId: string) => {
+        debugLog('Message deleted', { messageId })
 
-        while ((match = mentionRegex.exec(content)) !== null) {
-            const userName = match[1]
-            const participant = roomStore.participants.find(p => p.userName === userName)
-            if (participant) {
-                mentions.push(participant.socketId)
-            }
+        const index = messages.value.findIndex(m => m.id === messageId)
+        if (index > -1) {
+            messages.value.splice(index, 1)
         }
-
-        return mentions
     }
 
-    // Actions
-    const setupSocketListeners = () => {
-        debugLog('Setting up chat socket listeners')
+    const handleTypingIndicator = (data: { userName: string; isTyping: boolean }) => {
+        debugLog('Typing indicator', data)
 
-        // Handle incoming messages
-        socketStore.on('chat-message', (message: ChatMessage) => {
-            handleIncomingMessage(message)
-        })
+        const { userName, isTyping: userIsTyping } = data
+        const currentIndex = isTyping.value.indexOf(userName)
 
-        // Handle message edits
-        socketStore.on('chat-message-edited', (message: ChatMessage) => {
-            handleMessageEdited(message)
-        })
-
-        // Handle message deletions
-        socketStore.on('chat-message-deleted', (data: { roomId: string; messageId: string }) => {
-            handleMessageDeleted(data)
-        })
-
-        // Handle typing indicators
-        socketStore.on('chat-typing', (data: {
-            roomId: string
-            userId: string
-            userName: string
-            isTyping: boolean
-        }) => {
-            handleTypingIndicator(data)
-        })
-
-        // Handle reaction added
-        socketStore.on('chat-reaction-added', (data: {
-            roomId: string
-            messageId: string
-            reaction: MessageReaction
-        }) => {
-            handleReactionAdded(data)
-        })
-
-        // Handle reaction removed
-        socketStore.on('chat-reaction-removed', (data: {
-            roomId: string
-            messageId: string
-            emoji: string
-            userId: string
-        }) => {
-            handleReactionRemoved(data)
-        })
-
-        // Handle system messages
-        socketStore.on('chat-system-message', (message: ChatMessage) => {
-            handleSystemMessage(message)
-        })
-
-        // Handle chat history
-        socketStore.on('chat-history', (data: { roomId: string; messages: ChatMessage[] }) => {
-            handleChatHistory(data)
-        })
-
-        debugLog('Chat socket listeners configured')
+        if (userIsTyping && currentIndex === -1) {
+            isTyping.value.push(userName)
+        } else if (!userIsTyping && currentIndex > -1) {
+            isTyping.value.splice(currentIndex, 1)
+        }
     }
 
-    const handleIncomingMessage = (message: ChatMessage) => {
-        if (!roomStore.currentRoom || message.roomId !== roomStore.currentRoom.id) {
-            debugLog('Received message for different room', {
-                messageRoomId: message.roomId,
-                currentRoomId: roomStore.currentRoom?.id
-            })
+    const handleChatHistory = (historyMessages: ChatMessage[]) => {
+        debugLog('Chat history received', { messageCount: historyMessages.length })
+        messages.value = historyMessages.sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        )
+    }
+
+    // Initialize chat store
+    const initializeChat = async () => {
+        if (isInitialized.value) {
+            debugLog('Chat already initialized')
             return
         }
 
-        // Add message if not already exists
-        const existingIndex = messages.value.findIndex(m => m.id === message.id)
-        if (existingIndex === -1) {
-            messages.value.push(message)
-
-            // Keep only last 200 messages
-            if (messages.value.length > 200) {
-                messages.value = messages.value.slice(-200)
-            }
-        }
-
-        // Remove typing indicator for message sender
-        if (typingUsers.value.has(message.senderId)) {
-            typingUsers.value.delete(message.senderId)
-        }
-    }
-
-    const handleMessageEdited = (message: ChatMessage) => {
-        if (!roomStore.currentRoom || message.roomId !== roomStore.currentRoom.id) return
-
-        const existingIndex = messages.value.findIndex(m => m.id === message.id)
-        if (existingIndex !== -1) {
-            messages.value[existingIndex] = message
-        }
-    }
-
-    const handleMessageDeleted = (data: { roomId: string; messageId: string }) => {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return
-
-        const messageIndex = messages.value.findIndex(m => m.id === data.messageId)
-        if (messageIndex !== -1) {
-            messages.value.splice(messageIndex, 1)
-        }
-    }
-
-    const handleTypingIndicator = (data: {
-        roomId: string
-        userId: string
-        userName: string
-        isTyping: boolean
-    }) => {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return
-
-        // Don't show own typing indicator
-        if (data.userId === roomStore.currentParticipant?.socketId) return
-
-        if (data.isTyping) {
-            typingUsers.value.add(data.userId)
-        } else {
-            typingUsers.value.delete(data.userId)
-        }
-
-        // Auto-remove typing indicator after 3 seconds
-        if (data.isTyping) {
-            setTimeout(() => {
-                typingUsers.value.delete(data.userId)
-            }, 3000)
-        }
-    }
-
-    const handleReactionAdded = (data: {
-        roomId: string
-        messageId: string
-        reaction: MessageReaction
-    }) => {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return
-
-        const message = messages.value.find(m => m.id === data.messageId)
-        if (message) {
-            if (!message.reactions) message.reactions = []
-
-            const existingReaction = message.reactions.find(r => r.emoji === data.reaction.emoji)
-            if (existingReaction) {
-                Object.assign(existingReaction, data.reaction)
-            } else {
-                message.reactions.push(data.reaction)
-            }
-        }
-    }
-
-    const handleReactionRemoved = (data: {
-        roomId: string
-        messageId: string
-        emoji: string
-        userId: string
-    }) => {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return
-
-        const message = messages.value.find(m => m.id === data.messageId)
-        if (message?.reactions) {
-            const reactionIndex = message.reactions.findIndex(r => r.emoji === data.emoji)
-            if (reactionIndex !== -1) {
-                const reaction = message.reactions[reactionIndex]
-                reaction.userIds = reaction.userIds.filter(id => id !== data.userId)
-                reaction.count = reaction.userIds.length
-
-                if (reaction.count === 0) {
-                    message.reactions.splice(reactionIndex, 1)
-                }
-            }
-        }
-    }
-
-    const handleSystemMessage = (message: ChatMessage) => {
-        if (!roomStore.currentRoom || message.roomId !== roomStore.currentRoom.id) return
-
-        messages.value.push(message)
-    }
-
-    const handleChatHistory = (data: { roomId: string; messages: ChatMessage[] }) => {
-        if (!roomStore.currentRoom || data.roomId !== roomStore.currentRoom.id) return
-
-        isLoading.value = false
-        messages.value = data.messages || []
-    }
-
-    const sendMessage = async (content: string, type: 'text' | 'emoji' = 'text'): Promise<void> => {
-        if (!roomStore.currentRoom) {
-            throw new Error('Not in a room')
-        }
-
-        if (!content.trim()) {
-            throw new Error('Message cannot be empty')
-        }
-
-        if (content.length > 1000) {
-            throw new Error('Message is too long (max 1000 characters)')
-        }
-
-        clearError()
+        debugLog('Initializing chat event listeners')
 
         try {
-            const mentions = parseMentions(content)
+            // Register chat-specific event listeners
+            socketStore.on('chat-message', handleNewMessage)
+            socketStore.on('message-edited', handleMessageEdited)
+            socketStore.on('message-deleted', handleMessageDeleted)
+            socketStore.on('typing-indicator', handleTypingIndicator)
+            socketStore.on('chat-history', handleChatHistory)
 
-            const messageData: SendMessageRequest = {
-                roomId: roomStore.currentRoom.id,
-                content: content.trim(),
-                type,
-                mentions: mentions.length > 0 ? mentions : undefined
-            }
+            isInitialized.value = true
+            debugLog('Chat store initialized successfully')
 
-            const response = await socketStore.emit<SendMessageResponse>('send-message', messageData)
-
-            // Stop typing indicator
-            await sendTypingIndicator(false)
-
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to send message: ${error.message}`, 'SEND_MESSAGE_FAILED')
+        } catch (error) {
+            debugLog('Failed to initialize chat', error)
+            setChatError('Failed to initialize chat', 'CHAT_INIT_FAILED')
             throw error
         }
     }
 
-    const editMessage = async (messageId: string, newContent: string): Promise<void> => {
+    // Business logic methods
+    const sendMessage = async (content: string, type: 'text' | 'emoji' = 'text'): Promise<void> => {
+        if (!content.trim()) {
+            const error = 'Message content cannot be empty'
+            setChatError(error, 'VALIDATION_ERROR')
+            throw new Error(error)
+        }
+
         if (!roomStore.currentRoom) {
-            throw new Error('Not in a room')
+            const error = 'Must be in a room to send messages'
+            setChatError(error, 'NO_ROOM_ERROR')
+            throw new Error(error)
         }
 
-        if (!newContent.trim()) {
-            throw new Error('Message cannot be empty')
+        if (!isInitialized.value) {
+            await initializeChat()
         }
 
-        clearError()
+        isSendingMessage.value = true
+        clearChatError()
+
+        debugLog('Sending message', { content, type, roomId: roomStore.currentRoom.id })
 
         try {
-            const editData: EditMessageRequest = {
+            const request: SendMessageRequest = {
                 roomId: roomStore.currentRoom.id,
+                content: content.trim(),
+                type
+            }
+
+            const response = await socketStore.emit<SendMessageResponse>('send-message', request)
+
+            if (response.success) {
+                debugLog('Message sent successfully', { messageId: response.message.id })
+                // Message will be added via socket event
+            } else {
+                throw new Error(response.error || 'Failed to send message')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setChatError(`Failed to send message: ${errorMessage}`, 'SEND_MESSAGE_FAILED')
+            throw error
+        } finally {
+            isSendingMessage.value = false
+        }
+    }
+
+    const editMessage = async (messageId: string, newContent: string): Promise<void> => {
+        if (!newContent.trim()) {
+            const error = 'Message content cannot be empty'
+            setChatError(error, 'VALIDATION_ERROR')
+            throw new Error(error)
+        }
+
+        if (!roomStore.currentRoom) {
+            const error = 'Must be in a room to edit messages'
+            setChatError(error, 'NO_ROOM_ERROR')
+            throw new Error(error)
+        }
+
+        debugLog('Editing message', { messageId, newContent })
+
+        try {
+            const request: EditMessageRequest = {
                 messageId,
+                roomId: roomStore.currentRoom.id,
                 newContent: newContent.trim()
             }
 
-            const response = await socketStore.emit<EditMessageResponse>('edit-message', editData)
+            const response = await socketStore.emit('edit-message', request)
 
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to edit message: ${error.message}`, 'EDIT_MESSAGE_FAILED')
+            if (response.success) {
+                debugLog('Message edited successfully', { messageId })
+                // Message will be updated via socket event
+            } else {
+                throw new Error(response.error || 'Failed to edit message')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setChatError(`Failed to edit message: ${errorMessage}`, 'EDIT_MESSAGE_FAILED')
             throw error
         }
     }
 
     const deleteMessage = async (messageId: string): Promise<void> => {
         if (!roomStore.currentRoom) {
-            throw new Error('Not in a room')
+            const error = 'Must be in a room to delete messages'
+            setChatError(error, 'NO_ROOM_ERROR')
+            throw new Error(error)
         }
 
-        clearError()
+        debugLog('Deleting message', { messageId })
 
         try {
-            const deleteData: DeleteMessageRequest = {
-                roomId: roomStore.currentRoom.id,
-                messageId
+            const request: DeleteMessageRequest = {
+                messageId,
+                roomId: roomStore.currentRoom.id
             }
 
-            const response = await socketStore.emit<DeleteMessageResponse>('delete-message', deleteData)
+            const response = await socketStore.emit('delete-message', request)
 
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to delete message: ${error.message}`, 'DELETE_MESSAGE_FAILED')
+            if (response.success) {
+                debugLog('Message deleted successfully', { messageId })
+                // Message will be removed via socket event
+            } else {
+                throw new Error(response.error || 'Failed to delete message')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setChatError(`Failed to delete message: ${errorMessage}`, 'DELETE_MESSAGE_FAILED')
             throw error
         }
     }
 
     const sendTypingIndicator = async (isTyping: boolean): Promise<void> => {
-        if (!roomStore.currentRoom) return
+        if (!roomStore.currentRoom || !roomStore.currentParticipant) return
 
         try {
-            const now = Date.now()
-
-            // Throttle typing indicators (max once per second)
-            if (isTyping && now - lastTypingTime < 1000) {
-                return
-            }
-
-            lastTypingTime = now
-
-            const typingData: TypingIndicatorRequest = {
+            const request: TypingIndicatorRequest = {
                 roomId: roomStore.currentRoom.id,
                 isTyping
             }
 
-            await socketStore.emit('typing-indicator', typingData)
-
-            // Clear typing timeout
-            if (typingTimeout) {
-                clearTimeout(typingTimeout)
-            }
-
-            // Auto-stop typing after 3 seconds
-            if (isTyping) {
-                typingTimeout = setTimeout(() => {
-                    sendTypingIndicator(false)
-                }, 3000)
-            }
-
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to send typing indicator: ${error.message}`, 'TYPING_INDICATOR_FAILED')
-            // Don't throw for typing indicators as they're not critical
-        }
-    }
-
-    const addReaction = async (messageId: string, emoji: string): Promise<void> => {
-        if (!roomStore.currentRoom) {
-            throw new Error('Not in a room')
-        }
-
-        clearError()
-
-        try {
-            const reactionData: AddReactionRequest = {
-                roomId: roomStore.currentRoom.id,
-                messageId,
-                emoji
-            }
-
-            await socketStore.emit('add-reaction', reactionData)
-
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to add reaction: ${error.message}`, 'ADD_REACTION_FAILED')
-            throw error
-        }
-    }
-
-    const removeReaction = async (messageId: string, emoji: string): Promise<void> => {
-        if (!roomStore.currentRoom) {
-            throw new Error('Not in a room')
-        }
-
-        clearError()
-
-        try {
-            const reactionData: RemoveReactionRequest = {
-                roomId: roomStore.currentRoom.id,
-                messageId,
-                emoji
-            }
-
-            await socketStore.emit('remove-reaction', reactionData)
-
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to remove reaction: ${error.message}`, 'REMOVE_REACTION_FAILED')
-            throw error
+            await socketStore.emit('typing-indicator', request)
+        } catch (error) {
+            // Typing indicators are not critical, so just log the error
+            debugLog('Failed to send typing indicator', error)
         }
     }
 
     const loadChatHistory = async (): Promise<void> => {
         if (!roomStore.currentRoom) {
-            throw new Error('Not in a room')
+            const error = 'Must be in a room to load chat history'
+            setChatError(error, 'NO_ROOM_ERROR')
+            throw new Error(error)
         }
 
-        if (hasLoadedHistory.value) {
-            debugLog('Chat history already loaded for this room')
-            return
-        }
-
-        isLoading.value = true
-        clearError()
+        debugLog('Loading chat history', { roomId: roomStore.currentRoom.id })
 
         try {
-            const historyData = { roomId: roomStore.currentRoom.id }
+            const response = await socketStore.emit('get-chat-history', {
+                roomId: roomStore.currentRoom.id
+            })
 
-            const response = await socketStore.emit<{ messages: ChatMessage[] }>('get-chat-history', historyData)
-
-            messages.value = response.messages || []
-            hasLoadedHistory.value = true
-
-        } catch (err) {
-            const error = err as Error
-            setError(`Failed to load chat history: ${error.message}`, 'LOAD_HISTORY_FAILED')
+            if (response.success) {
+                handleChatHistory(response.messages)
+                debugLog('Chat history loaded', { messageCount: response.messages.length })
+            } else {
+                throw new Error(response.error || 'Failed to load chat history')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setChatError(`Failed to load chat history: ${errorMessage}`, 'LOAD_HISTORY_FAILED')
             throw error
-        } finally {
-            isLoading.value = false
         }
     }
 
     const clearMessages = () => {
         messages.value = []
-        participants.value = []
-        typingUsers.value.clear()
-        isLoading.value = false
-        clearError()
-        hasLoadedHistory.value = false
-
-        // Clear typing timeout
-        if (typingTimeout) {
-            clearTimeout(typingTimeout)
-            typingTimeout = null
-        }
+        isTyping.value = []
+        clearChatError()
+        debugLog('Chat messages cleared')
     }
 
-    const addSystemMessage = (type: SystemMessageType, userName: string) => {
-        if (!roomStore.currentRoom) return
+    // Computed properties
+    const messageCount = computed(() => messages.value.length)
 
-        const systemMessage = createSystemMessage(type, userName, roomStore.currentRoom.id)
-        messages.value.push(systemMessage)
-    }
+    const recentMessages = computed(() =>
+        messages.value.slice(-50) // Last 50 messages for performance
+    )
 
-    // Utility functions
-    const getMessageById = (messageId: string): ChatMessage | undefined => {
-        return messages.value.find(m => m.id === messageId)
-    }
+    const myMessages = computed(() =>
+        messages.value.filter(m =>
+            m.senderId === roomStore.currentParticipant?.socketId
+        )
+    )
 
-    const getMessagesByUser = (userId: string): ChatMessage[] => {
-        return messages.value.filter(m => m.senderId === userId)
-    }
+    const canSendMessages = computed(() =>
+        roomStore.isInRoom && !isSendingMessage.value
+    )
 
-    const canEditMessage = (message: ChatMessage): boolean => {
-        return message.senderId === roomStore.currentParticipant?.socketId
-    }
+    const typingUsers = computed(() =>
+        isTyping.value.filter(userName =>
+            userName !== roomStore.currentParticipant?.userName
+        )
+    )
 
-    const hasUserReacted = (message: ChatMessage, emoji: string): boolean => {
-        if (!message.reactions || !roomStore.currentParticipant) return false
-
-        const reaction = message.reactions.find(r => r.emoji === emoji)
-        return reaction ? reaction.userIds.includes(roomStore.currentParticipant.socketId) : false
-    }
-
-    const isMentioned = (message: ChatMessage): boolean => {
-        if (!roomStore.currentParticipant) return false
-        return message.mentions?.includes(roomStore.currentParticipant.socketId) || false
-    }
-
-    const isTypingUsersArray = computed(() => Array.from(typingUsers.value))
-
-    // Initialize socket listeners when store is created
-    setupSocketListeners()
+    const hasError = computed(() => !!chatError.value)
 
     return {
-        // State
-        messages,
-        participants,
-        typingUsers,
-        isLoading,
-        error,
-        hasLoadedHistory,
+        // State (readonly)
+        messages: readonly(messages),
+        chatError: readonly(chatError),
+        isTyping: readonly(isTyping),
+        isSendingMessage: readonly(isSendingMessage),
 
-        // Computed
-        hasMessages,
-        canSendMessage,
-        shouldShowLoading,
-        lastMessage,
-        mentionNotifications,
-        isTypingUsersArray,
+        // Computed properties
+        messageCount,
+        recentMessages,
+        myMessages,
+        canSendMessages,
+        typingUsers,
+        hasError,
 
         // Actions
         sendMessage,
         editMessage,
         deleteMessage,
         sendTypingIndicator,
-        addReaction,
-        removeReaction,
         loadChatHistory,
         clearMessages,
-        addSystemMessage,
+        clearChatError,
 
-        // Utilities
-        getMessageById,
-        getMessagesByUser,
-        canEditMessage,
-        hasUserReacted,
-        isMentioned,
+        // Initialization
+        initializeChat,
+        isInitialized: readonly(isInitialized),
 
-        // Error handling
-        setError,
-        clearError,
-
-        // Development utilities (only available in dev mode)
+        // Development utilities
         ...(process.env.NODE_ENV === 'development' && { debugLog })
     }
 })

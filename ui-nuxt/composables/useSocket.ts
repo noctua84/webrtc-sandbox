@@ -1,8 +1,13 @@
-// composables/useSocket.ts
-import { io, Socket } from 'socket.io-client'
-import { ref, computed, readonly } from 'vue'
+// composables/useSocket.ts - Clean communication layer only
+import { io, type Socket } from 'socket.io-client'
+import { ref, readonly, computed } from 'vue'
 import { useRuntimeConfig } from '#imports'
-import type {ConnectionStatus, LogEntry, LogLevel, LogData} from "~/types";
+import type { ConnectionStatus, LogEntry, LogLevel, LogData } from "~/types"
+
+interface UseSocketOptions {
+    autoConnect?: boolean
+    url?: string
+}
 
 const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEntry => ({
     id: Date.now() + Math.random(),
@@ -12,120 +17,265 @@ const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEn
     data: data ? JSON.stringify(data, null, 2) : null
 })
 
-export const useSocket = () => {
+// Minimal global state - only connection management
+const globalSocketState = {
+    socket: null as Socket | null,
+    isConnected: ref(false),
+    isConnecting: ref(false),
+    connectionError: ref<string | null>(null),
+    logs: ref<LogEntry[]>([]),
+    initialized: false,
+    pendingListeners: [] as Array<{ event: string, handler: (...args: any[]) => void }>
+}
+
+export const useSocket = (options: UseSocketOptions = {}) => {
     const config = useRuntimeConfig()
 
-    let socket: Socket | null = null
-    const connectionStatus = ref<ConnectionStatus>('disconnected')
-    const connectionError = ref<string | null>(null)
-    const logs = ref<LogEntry[]>([])
-    const isConnecting = ref(false)
+    const {
+        autoConnect = false,
+        url = config?.public?.serverUrl as string || 'http://localhost:3001'
+    } = options
 
+    // Simple logging
     const addLog = (level: LogLevel, message: string, data?: LogData) => {
         const entry = createLogEntry(level, message, data)
-        logs.value.push(entry)
+        globalSocketState.logs.value.push(entry)
 
-        // Keep only last 1000 logs
-        if (logs.value.length > 1000) {
-            logs.value = logs.value.slice(-1000)
+        if (globalSocketState.logs.value.length > 1000) {
+            globalSocketState.logs.value = globalSocketState.logs.value.slice(-1000)
+        }
+
+        const color = {
+            error: '#ef4444',
+            warning: '#f59e0b',
+            success: '#10b981',
+            info: '#3b82f6'
+        }[level] || '#6b7280'
+
+        const consoleMessage = `[SOCKET] [${level.toUpperCase()}] ${message}`
+        if (data) {
+            console.log(`%c${consoleMessage}`, `color: ${color}`, data)
+        } else {
+            console.log(`%c${consoleMessage}`, `color: ${color}`)
         }
     }
 
+    // Socket readiness check
+    const isSocketReady = (): boolean => {
+        return !!(
+            globalSocketState.socket &&
+            globalSocketState.socket.connected &&
+            globalSocketState.socket.id &&
+            globalSocketState.isConnected.value
+        )
+    }
+
+    // Wait for socket readiness
+    const waitForSocketReady = (timeoutMs: number = 5000): Promise<void> => {
+        return new Promise((resolve, reject) => {
+            const startTime = Date.now()
+
+            const checkReady = () => {
+                if (isSocketReady()) {
+                    resolve()
+                    return
+                }
+
+                if (Date.now() - startTime > timeoutMs) {
+                    reject(new Error(`Socket readiness timeout after ${timeoutMs}ms`))
+                    return
+                }
+
+                setTimeout(checkReady, 100)
+            }
+
+            checkReady()
+        })
+    }
+
+    // Register pending listeners
+    const registerPendingListeners = () => {
+        if (!globalSocketState.socket || globalSocketState.pendingListeners.length === 0) return
+
+        addLog('info', `Registering ${globalSocketState.pendingListeners.length} pending listeners`)
+
+        globalSocketState.pendingListeners.forEach(({ event, handler }) => {
+            const wrappedHandler = (...args: any[]) => {
+                addLog('info', `Received event: ${event}`, { args })
+                handler(...args)
+            }
+
+            globalSocketState.socket!.on(event, wrappedHandler)
+        })
+
+        globalSocketState.pendingListeners.length = 0
+        addLog('success', 'All pending listeners registered')
+    }
+
+    // Core connection method
     const connect = (): Promise<void> => {
         return new Promise((resolve, reject) => {
-            if (socket?.connected) {
-                addLog('info', 'Socket already connected')
+            if (process.server) {
+                reject(new Error('Cannot connect on server side'))
+                return
+            }
+
+            if (globalSocketState.socket?.connected) {
+                globalSocketState.isConnected.value = true
+                registerPendingListeners()
                 resolve()
                 return
             }
 
-            isConnecting.value = true
-            connectionStatus.value = 'connecting'
-            connectionError.value = null
+            if (globalSocketState.isConnecting.value) {
+                waitForSocketReady(10000).then(resolve).catch(reject)
+                return
+            }
 
-            addLog('info', 'Attempting to connect to server', {
-                serverUrl: config.public.serverUrl
-            })
+            globalSocketState.isConnecting.value = true
+            globalSocketState.connectionError.value = null
 
-            const serverUrl = config?.public?.serverUrl as string || 'http://localhost:3001'
+            addLog('info', `Connecting to ${url}...`)
 
-            console.log('Connecting to server:', serverUrl)
+            // Clean up existing socket
+            if (globalSocketState.socket) {
+                globalSocketState.socket.removeAllListeners()
+                globalSocketState.socket.disconnect()
+            }
 
-            socket = io(serverUrl , {
-                transports: ['websocket', 'polling'],
-                timeout: 10000,
-                reconnection: true,
-                reconnectionAttempts: 5,
-                reconnectionDelay: 1000
-            })
+            try {
+                globalSocketState.socket = io(url, {
+                    transports: ['websocket', 'polling'],
+                    timeout: 10000,
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    reconnectionDelay: 1000,
+                    forceNew: true
+                })
 
-            socket.on('connect', () => {
-                isConnecting.value = false
-                connectionStatus.value = 'connected'
-                connectionError.value = null
+                // Connection events
+                globalSocketState.socket.on('connect', () => {
+                    globalSocketState.isConnected.value = true
+                    globalSocketState.isConnecting.value = false
+                    globalSocketState.connectionError.value = null
+                    globalSocketState.initialized = true
 
-                addLog('success', 'Connected to server', { socketId: socket?.id })
-                resolve()
-            })
+                    addLog('success', 'Connected to server', {
+                        socketId: globalSocketState.socket?.id,
+                        transport: globalSocketState.socket?.io?.engine?.transport?.name
+                    })
 
-            socket.on('connect_error', (error) => {
-                isConnecting.value = false
-                connectionStatus.value = 'error'
-                connectionError.value = error.message
+                    registerPendingListeners()
 
-                addLog('error', 'Connection failed', { error: error.message })
+                    setTimeout(() => {
+                        if (isSocketReady()) {
+                            resolve()
+                        } else {
+                            waitForSocketReady(2000).then(resolve).catch(reject)
+                        }
+                    }, 100)
+                })
+
+                globalSocketState.socket.on('disconnect', (reason) => {
+                    globalSocketState.isConnected.value = false
+                    addLog('warning', 'Disconnected from server', { reason })
+                })
+
+                globalSocketState.socket.on('connect_error', (error) => {
+                    globalSocketState.isConnecting.value = false
+                    globalSocketState.connectionError.value = error.message
+                    addLog('error', 'Connection failed', { error: error.message })
+                    reject(error)
+                })
+
+                globalSocketState.socket.on('reconnect', (attemptNumber) => {
+                    globalSocketState.isConnected.value = true
+                    globalSocketState.connectionError.value = null
+                    addLog('success', 'Reconnected to server', { attempt: attemptNumber })
+                    registerPendingListeners()
+                })
+
+            } catch (error) {
+                globalSocketState.isConnecting.value = false
+                globalSocketState.connectionError.value = (error as Error).message
+                addLog('error', 'Failed to create socket connection', { error: (error as Error).message })
                 reject(error)
-            })
-
-            socket.on('disconnect', (reason) => {
-                connectionStatus.value = 'disconnected'
-                addLog('warning', 'Disconnected from server', { reason })
-            })
-
-            socket.on('reconnect', (attemptNumber) => {
-                connectionStatus.value = 'connected'
-                connectionError.value = null
-                addLog('success', 'Reconnected to server', { attempt: attemptNumber })
-            })
-
-            socket.on('reconnect_error', (error) => {
-                addLog('error', 'Reconnection failed', { error: error.message })
-            })
-
-            socket.on('reconnect_failed', () => {
-                connectionStatus.value = 'error'
-                connectionError.value = 'Failed to reconnect after multiple attempts'
-                addLog('error', 'Reconnection failed permanently')
-            })
+            }
         })
     }
 
+    // Disconnect
     const disconnect = () => {
-        if (socket) {
+        if (globalSocketState.socket) {
             addLog('info', 'Disconnecting from server')
-            socket.disconnect()
-            socket = null
+            globalSocketState.socket.removeAllListeners()
+            globalSocketState.socket.disconnect()
+            globalSocketState.socket = null
+            globalSocketState.initialized = false
         }
-        connectionStatus.value = 'disconnected'
-        connectionError.value = null
+
+        globalSocketState.isConnected.value = false
+        globalSocketState.isConnecting.value = false
+        globalSocketState.connectionError.value = null
     }
 
-    const emit = <T = any>(event: string, data?: any): Promise<T> => {
-        return new Promise((resolve, reject) => {
-            if (!socket?.connected) {
-                const error = 'Socket not connected'
-                addLog('error', `Failed to emit ${event}: ${error}`, { event, data })
+    // Core emit method - just communication
+    const emit = <T = any>(event: string, data?: any, timeoutMs: number = 15000): Promise<T> => {
+        return new Promise(async (resolve, reject) => {
+            try {
+                if (!globalSocketState.initialized || !globalSocketState.socket) {
+                    await connect()
+                }
+                await waitForSocketReady(5000)
+            } catch (error) {
+                addLog('error', 'Socket not ready for emit', { event, error: (error as Error).message })
+                reject(error)
+                return
+            }
+
+            if (!isSocketReady()) {
+                const error = `Cannot emit ${event}: socket not ready`
+                addLog('error', error, { event, data })
                 reject(new Error(error))
                 return
             }
 
             addLog('info', `Emitting ${event}`, { event, data })
 
-            socket.emit(event, data, (response: any) => {
+            const timeout = setTimeout(() => {
+                const error = `Event '${event}' timed out after ${timeoutMs}ms`
+                addLog('error', error, { event, data })
+                reject(new Error(error))
+            }, timeoutMs)
+
+            globalSocketState.socket!.emit(event, data, (response: any) => {
+                clearTimeout(timeout)
+
                 addLog('info', `Response for ${event}`, { event, response })
 
-                if (response?.success === false) {
-                    reject(new Error(response.error || 'Unknown error'))
+                if (response === undefined || response === null) {
+                    const error = `No response received for event '${event}'`
+                    addLog('error', error, { event, data })
+                    reject(new Error(error))
+                    return
+                }
+
+                if (typeof response !== 'object') {
+                    const error = `Invalid response format for '${event}': expected object, got ${typeof response}`
+                    addLog('error', error, { event, data, response })
+                    reject(new Error(error))
+                    return
+                }
+
+                if ('success' in response) {
+                    if (response.success === true) {
+                        addLog('success', `Event '${event}' completed successfully`)
+                        resolve(response)
+                    } else {
+                        const error = response.error || `Server error for event '${event}'`
+                        addLog('error', `Event '${event}' failed`, { error, response })
+                        reject(new Error(error))
+                    }
                 } else {
                     resolve(response)
                 }
@@ -133,38 +283,101 @@ export const useSocket = () => {
         })
     }
 
+    // Event listener registration with queueing
     const on = (event: string, handler: (...args: any[]) => void) => {
-        if (socket) {
-            socket.on(event, (...args) => {
-                addLog('info', `Received ${event}`, { event, args })
+        if (globalSocketState.socket && globalSocketState.initialized) {
+            addLog('info', `Registering listener for event: ${event}`)
+            const wrappedHandler = (...args: any[]) => {
+                addLog('info', `Received event: ${event}`, { args })
                 handler(...args)
-            })
+            }
+            globalSocketState.socket.on(event, wrappedHandler)
+        } else {
+            addLog('info', `Queueing listener for event: ${event} (socket not ready)`)
+            globalSocketState.pendingListeners.push({ event, handler })
         }
     }
 
+    // Remove event listener
     const off = (event: string, handler?: (...args: any[]) => void) => {
-        if (socket) {
-            socket.off(event, handler)
+        if (globalSocketState.socket) {
+            globalSocketState.socket.off(event, handler)
+        } else {
+            const index = globalSocketState.pendingListeners.findIndex(l => l.event === event && l.handler === handler)
+            if (index > -1) {
+                globalSocketState.pendingListeners.splice(index, 1)
+            }
         }
     }
 
-    // Computed properties
-    const isConnected = computed(() => connectionStatus.value === 'connected')
-    const hasError = computed(() => connectionStatus.value === 'error')
+    // Initialize
+    const initialize = async () => {
+        if (globalSocketState.initialized) return
+
+        addLog('info', 'Initializing socket connection...')
+
+        if (autoConnect && !process.server) {
+            try {
+                await connect()
+            } catch (error) {
+                addLog('error', 'Auto-connection failed', { error: (error as Error).message })
+                throw error
+            }
+        }
+
+        globalSocketState.initialized = true
+    }
+
+    // Utility methods
+    const clearLogs = () => {
+        globalSocketState.logs.value = []
+        addLog('info', 'Logs cleared')
+    }
+
+    const getDebugInfo = () => {
+        return {
+            isConnected: globalSocketState.isConnected.value,
+            isConnecting: globalSocketState.isConnecting.value,
+            connectionError: globalSocketState.connectionError.value,
+            isInitialized: globalSocketState.initialized,
+            socketExists: !!globalSocketState.socket,
+            socketConnected: globalSocketState.socket?.connected,
+            socketId: globalSocketState.socket?.id,
+            transportName: globalSocketState.socket?.io?.engine?.transport?.name,
+            isSocketReady: isSocketReady(),
+            pendingListeners: globalSocketState.pendingListeners.length
+        }
+    }
+
+    // Computed connection status
+    const connectionStatus = computed<ConnectionStatus>(() => {
+        if (globalSocketState.isConnecting.value) return 'connecting'
+        if (globalSocketState.isConnected.value) return 'connected'
+        if (globalSocketState.connectionError.value) return 'error'
+        return 'disconnected'
+    })
 
     return {
-        socket: readonly(ref(socket)),
+        // Connection state (readonly)
+        isConnected: readonly(globalSocketState.isConnected),
+        isConnecting: readonly(globalSocketState.isConnecting),
+        connectionError: readonly(globalSocketState.connectionError),
         connectionStatus: readonly(connectionStatus),
-        connectionError: readonly(connectionError),
-        logs: readonly(logs),
-        isConnecting: readonly(isConnecting),
-        isConnected,
-        hasError,
+        logs: readonly(globalSocketState.logs),
+
+        // Core communication methods
         connect,
         disconnect,
         emit,
         on,
         off,
-        addLog
+        initialize,
+
+        // Utilities
+        clearLogs,
+        addLog,
+        getDebugInfo,
+        isSocketReady,
+        waitForSocketReady
     }
 }

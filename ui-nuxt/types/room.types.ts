@@ -54,7 +54,8 @@ export interface CreateRoomResponse {
     success: true
     room: Room
     participant: Participant
-    reconnectionToken: string // ✅ Added
+    reconnectionToken: string
+    error?: string
 }
 
 export interface JoinRoomResponse {
@@ -62,7 +63,8 @@ export interface JoinRoomResponse {
     room: Room
     participant: Participant
     participants: Participant[]
-    reconnectionToken: string // ✅ Added
+    reconnectionToken: string
+    error?: string
 }
 
 export interface ReconnectRoomResponse {
@@ -71,6 +73,7 @@ export interface ReconnectRoomResponse {
     participant: Participant
     participants: Participant[]
     error?: string
+    reconnectionToken: string
 }
 
 export interface GetRoomInfoResponse {

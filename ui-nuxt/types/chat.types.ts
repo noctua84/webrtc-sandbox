@@ -93,6 +93,7 @@ export interface RemoveReactionRequest {
 export interface SendMessageResponse {
     success: true
     message: ChatMessage
+    error?: string
 }
 
 export interface EditMessageResponse {
