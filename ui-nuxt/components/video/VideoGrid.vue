@@ -1,47 +1,39 @@
 <script setup lang="ts">
-import {useWebRTCStore} from "~/stores/webrtc.store";
-import {useRoomStore} from "~/stores/room.store";
-import VideoTile from "./VideoTile.vue";
-import {computed} from "vue";
+import { computed } from 'vue'
+import { useWebRTCStore } from '@/stores/webrtc.store'
+import { useRoomStore } from '@/stores/room.store'
+import VideoTile from './VideoTile.vue'
 
 // Stores
 const webrtcStore = useWebRTCStore()
 const roomStore = useRoomStore()
 
 // Computed
-const screenSharingParticipant = computed(() => {
-  // Check if local user is sharing screen
-  if (webrtcStore.isScreenSharing) {
-    return { isLocal: true, socketId: roomStore.currentParticipant?.socketId }
-  }
-
-  // Check if any remote participant is sharing screen
-  const sharingParticipant = otherParticipants.value.find(
-      p => p.mediaStatus?.isScreenSharing
-  )
-
-  return sharingParticipant
-      ? { isLocal: false, socketId: sharingParticipant.socketId }
-      : null
-})
-
 const otherParticipants = computed(() => {
-  if (!roomStore.currentParticipant) return []
-  return roomStore.participants.filter(
-      p => p.socketId !== roomStore.currentParticipant?.socketId
+  return roomStore.participants.filter(p =>
+      p.socketId !== roomStore.currentParticipant?.socketId
   )
 })
 
 const totalParticipants = computed(() => {
-  return webrtcStore.isMediaActive ? 1 + otherParticipants.value.length : 0
+  // Include local participant + other participants
+  return 1 + otherParticipants.value.length
 })
 
-const maxSlots = computed(() => 4) // Maximum 4 participants
+const screenSharingParticipant = computed(() => {
+  // Check if local user is screen sharing
+  if (webrtcStore.isScreenSharing) {
+    return roomStore.currentParticipant
+  }
+
+  // Check if any remote participant is screen sharing
+  return otherParticipants.value.find(p => p.mediaStatus?.isScreenSharing)
+})
 
 const emptySlots = computed(() => {
-  const used = totalParticipants.value
-  const max = maxSlots.value
-  return Math.max(0, max - used)
+  const maxSlots = 4 // Limit to 4 participants for optimal layout
+  const currentParticipants = totalParticipants.value
+  return Math.max(0, Math.min(maxSlots - currentParticipants, 2)) // Show max 2 empty slots
 })
 
 const gridClass = computed(() => {
@@ -87,24 +79,13 @@ const getConnectionState = (participantId: string): string => {
 }
 </script>
 
+
 <template>
   <v-card elevation="2" class="fill-height">
     <v-card-text class="pa-2 fill-height">
-      <div
-          v-if="!webrtcStore.isMediaActive"
-          class="d-flex align-center justify-center fill-height"
-      >
-        <div class="text-center">
-          <v-icon size="64" color="grey-lighten-1" class="mb-4">mdi-video-off</v-icon>
-          <div class="text-h6 text-medium-emphasis">Start your camera to begin video call</div>
-          <div class="text-caption text-disabled mt-2">
-            Click "Start Video" in the controls above
-          </div>
-        </div>
-      </div>
-
-      <div v-else :class="gridClass" class="fill-height">
-        <!-- Local Video -->
+      <!-- Always show video grid when meeting has started -->
+      <div :class="gridClass" class="fill-height">
+        <!-- Local Video - Always visible when meeting started -->
         <VideoTile
             :stream="webrtcStore.localStream"
             :user-name="roomStore.currentParticipant?.userName || 'You'"
@@ -128,11 +109,11 @@ const getConnectionState = (participantId: string): string => {
             :class="tileClass(participant.socketId)"
         />
 
-        <!-- Empty Slots -->
+        <!-- Empty Slots for waiting participants -->
         <div
             v-for="i in emptySlots"
             :key="`empty-${i}`"
-            :class="tileClass"
+            :class="tileClass()"
             class="d-flex align-center justify-center"
         >
           <div class="text-center">
@@ -213,7 +194,7 @@ const getConnectionState = (participantId: string): string => {
   width: 100%;
   height: 100%;
   min-height: 120px;
-  width: 120px;
+  max-width: 180px;
 }
 
 .tile-ninth {

@@ -8,7 +8,7 @@ const roomStore = useRoomStore()
 // Local state
 const userName = ref('')
 const roomId = ref('')
-const actionType = ref<'create' | 'join'>('create')
+const actionType = ref<'create' | 'join' | null>(null)
 const isReconnecting = ref(false)
 
 // Input refs for focus management
@@ -32,6 +32,7 @@ const roomIdRules = computed(() => [
 
 const isFormValid = computed(() => {
   const userNameValid = userName.value.trim().length >= 2
+  if (!actionType.value) return false
   if (actionType.value === 'create') {
     return userNameValid
   }
@@ -76,7 +77,7 @@ const handleReconnect = async () => {
   }
 }
 
-const setActionType = (newType: 'create' | 'join') => {
+const setActionType = (newType: 'create' | 'join' | null) => {
   actionType.value = newType
   roomId.value = '' // Clear room ID when switching
 
@@ -146,12 +147,10 @@ onMounted(() => {
                   ref="userNameInput"
                   v-model="userName"
                   :rules="userNameRules"
-                  label="Your Name"
                   placeholder="Enter your name"
                   prepend-icon="mdi-account"
                   variant="outlined"
                   class="mb-4"
-                  :disabled="isLoading"
                   autofocus
                   autocomplete="name"
               />
@@ -165,7 +164,6 @@ onMounted(() => {
                     color="primary"
                     variant="outlined"
                     divided
-                    mandatory
                     class="w-100"
                     :disabled="isLoading"
                 >
@@ -177,6 +175,7 @@ onMounted(() => {
                     <v-icon start>mdi-login</v-icon>
                     Join Room
                   </v-btn>
+
                 </v-btn-toggle>
               </div>
 
@@ -196,6 +195,7 @@ onMounted(() => {
 
               <!-- Submit Button -->
               <v-btn
+                  v-if="actionType !== null"
                   type="submit"
                   color="primary"
                   size="large"
@@ -218,7 +218,10 @@ onMounted(() => {
                 density="compact"
             >
               <div class="text-caption">
-                <template v-if="actionType === 'create'">
+                <template v-if="actionType === null">
+                  Select an action above to continue.
+                </template>
+                <template v-else-if="actionType === 'create'">
                   Create a new video room and share the room ID with others to let them join.
                 </template>
                 <template v-else>
@@ -236,12 +239,6 @@ onMounted(() => {
 <style scoped>
 .w-100 {
   width: 100%;
-}
-
-/* Ensure proper focus styling */
-:deep(.v-field--focused) {
-  outline: 2px solid rgb(var(--v-theme-primary));
-  outline-offset: 2px;
 }
 
 /* Improve button toggle styling */

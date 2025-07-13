@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import {useRoomStore} from "~/stores/room.store";
-import RoomInfo from "~/components/RoomInfo.vue";
-import ParticipantsList from "~/components/video/ParticipantsList.vue";
-import RoomForm from "~/components/RoomForm.vue";
-import MediaControls from "~/components/video/MediaControls.vue";
-import VideoGrid from "~/components/video/VideoGrid.vue";
-import ConnectionStatus from "~/components/ConnectionStatus.vue";
-import ChatBox from "~/components/chat/ChatBox.vue";
+import { useRoomStore } from "~/stores/room.store"
+import RoomInfo from "~/components/RoomInfo.vue"
+import ParticipantsList from "~/components/video/ParticipantsList.vue"
+import RoomForm from "~/components/RoomForm.vue"
+import MediaControls from "~/components/video/MediaControls.vue"
+import VideoGrid from "~/components/video/VideoGrid.vue"
+import ConnectionStatus from "~/components/ConnectionStatus.vue"
+import ChatBox from "~/components/chat/ChatBox.vue"
+import AudioSettings from "~/components/video/AudioSettings.vue"
+import VideoSettings from "~/components/video/VideoSettings.vue"
 import { ref, computed } from 'vue'
 
 definePageMeta({
@@ -17,28 +19,18 @@ definePageMeta({
 const roomStore = useRoomStore()
 
 // Local state
-const showError = ref(false)
 const showDeviceSettings = ref(false)
 const showAudioSettings = ref(false)
-const showConnectionSettings = ref(false)
-const showGeneralSettings = ref(false)
-const isMeetingStarted = ref(false)
-
-// Methods
-const startMeeting = () => {
-  isMeetingStarted.value = true
-  // Could emit an event to notify other participants that meeting has started
-}
+const showVideoSettings = ref(false)
 
 // Computed
 const isLoading = computed(() => {
-  return roomStore.isCreatingRoom || roomStore.isJoiningRoom // || webrtcStore.isConnecting
+  return roomStore.isCreatingRoom || roomStore.isJoiningRoom
 })
 
 const loadingMessage = computed(() => {
   if (roomStore.isCreatingRoom) return 'Creating room...'
   if (roomStore.isJoiningRoom) return 'Joining room...'
-  // if (webrtcStore.isConnecting) return 'Setting up media...'
   return 'Loading...'
 })
 </script>
@@ -68,25 +60,11 @@ const loadingMessage = computed(() => {
           <v-card flat class="px-4 py-2 d-flex align-center justify-space-between" elevation="1">
             <!-- Left side: Media Controls -->
             <div class="d-flex align-center gap-2">
-              <!-- Start Meeting Button (host only, when meeting not started) -->
-              <v-btn
-                  v-if="roomStore.isRoomCreator && !isMeetingStarted"
-                  color="primary"
-                  variant="flat"
-                  size="small"
-                  @click="startMeeting"
-              >
-                <v-icon start size="16">mdi-play</v-icon>
-                Start Meeting
-              </v-btn>
-
-              <!-- Media Controls (always visible when meeting started or not host) -->
-              <template v-if="isMeetingStarted || !roomStore.isRoomCreator">
-                <MediaControls compact />
-              </template>
+              <!-- Always show media controls when in room -->
+              <MediaControls compact />
             </div>
 
-            <!-- Right side: All Settings under gear icon -->
+            <!-- Right side: Settings -->
             <div class="d-flex align-center gap-2">
               <v-menu location="bottom">
                 <template #activator="{ props }">
@@ -116,18 +94,11 @@ const loadingMessage = computed(() => {
                     <v-list-item-title>Audio Settings</v-list-item-title>
                   </v-list-item>
 
-                  <v-list-item @click="showConnectionSettings = true">
+                  <v-list-item @click="showVideoSettings = true">
                     <template #prepend>
-                      <v-icon>mdi-network</v-icon>
+                      <v-icon>mdi-video-settings</v-icon>
                     </template>
-                    <v-list-item-title>Connection Settings</v-list-item-title>
-                  </v-list-item>
-
-                  <v-list-item @click="showGeneralSettings = true">
-                    <template #prepend>
-                      <v-icon>mdi-cog-outline</v-icon>
-                    </template>
-                    <v-list-item-title>General Settings</v-list-item-title>
+                    <v-list-item-title>Video Settings</v-list-item-title>
                   </v-list-item>
                 </v-list>
               </v-menu>
@@ -187,47 +158,13 @@ const loadingMessage = computed(() => {
         @close="showDeviceSettings = false"
     />
 
-    <!-- Audio Settings Dialog -->
-    <v-dialog v-model="showAudioSettings" max-width="500">
-      <v-card>
-        <v-card-title>Audio Settings</v-card-title>
-        <v-card-text>
-          <p>Audio settings will be implemented here</p>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="showAudioSettings = false">Close</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <AudioSettings
+        v-model="showAudioSettings"
+    />
 
-    <!-- Connection Settings Dialog -->
-    <v-dialog v-model="showConnectionSettings" max-width="500">
-      <v-card>
-        <v-card-title>Connection Settings</v-card-title>
-        <v-card-text>
-          <p>Connection settings will be implemented here</p>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="showConnectionSettings = false">Close</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
-
-    <!-- General Settings Dialog -->
-    <v-dialog v-model="showGeneralSettings" max-width="500">
-      <v-card>
-        <v-card-title>General Settings</v-card-title>
-        <v-card-text>
-          <p>General settings will be implemented here</p>
-        </v-card-text>
-        <v-card-actions>
-          <v-spacer />
-          <v-btn @click="showGeneralSettings = false">Close</v-btn>
-        </v-card-actions>
-      </v-card>
-    </v-dialog>
+    <VideoSettings
+        v-model="showVideoSettings"
+    />
   </v-container>
 </template>
 

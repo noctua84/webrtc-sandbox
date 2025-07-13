@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 
 interface Props {
   stream: MediaStream | null
@@ -25,6 +25,17 @@ const videoElement = ref<HTMLVideoElement>()
 // Computed
 const displayName = computed(() => props.isLocal ? 'You' : props.userName)
 
+const shouldShowVideo = computed(() => {
+  // Show video if we have a stream AND video is enabled AND the track exists and is enabled
+  if (!props.stream || !props.hasVideo) return false
+
+  const videoTracks = props.stream.getVideoTracks()
+  if (videoTracks.length === 0) return false
+
+  // Check if the video track is actually enabled
+  return videoTracks[0].enabled
+})
+
 const cardColor = computed(() => {
   if (props.isLocal) return 'primary'
   if (props.connectionState === 'connected') return 'surface'
@@ -37,7 +48,6 @@ const cardVariant = computed(() => {
 })
 
 const avatarSize = computed(() => {
-  // Responsive avatar size based on tile size
   return 64
 })
 
@@ -88,17 +98,75 @@ const isConnecting = computed(() => {
 const volumeColor = computed(() => 'success')
 const volumeIcon = computed(() => 'mdi-volume-medium')
 
+// Setup video element with stream
+const setupVideoElement = async () => {
+  await nextTick()
+  if (videoElement.value && props.stream) {
+    console.log('Setting up video element with stream:', {
+      hasVideo: props.hasVideo,
+      streamTracks: props.stream.getTracks().length,
+      videoTracks: props.stream.getVideoTracks().length,
+      isLocal: props.isLocal
+    })
+
+    try {
+      videoElement.value.srcObject = props.stream
+      await videoElement.value.play()
+    } catch (error) {
+      console.error('Failed to play video:', error)
+    }
+  }
+}
+
 // Watch for stream changes
-watch(() => props.stream, (newStream) => {
-  if (videoElement.value && newStream) {
-    videoElement.value.srcObject = newStream
+watch(() => props.stream, async (newStream, oldStream) => {
+  console.log('Stream changed:', {
+    newStream: !!newStream,
+    oldStream: !!oldStream,
+    hasVideo: props.hasVideo,
+    isLocal: props.isLocal,
+    userName: props.userName
+  })
+
+  if (videoElement.value) {
+    if (newStream) {
+      videoElement.value.srcObject = newStream
+      try {
+        await videoElement.value.play()
+      } catch (error) {
+        console.error('Failed to play video after stream change:', error)
+      }
+    } else {
+      videoElement.value.srcObject = null
+    }
   }
 }, { immediate: true })
 
+// Watch for hasVideo changes
+watch(() => props.hasVideo, (newHasVideo) => {
+  console.log('HasVideo changed:', {
+    hasVideo: newHasVideo,
+    stream: !!props.stream,
+    isLocal: props.isLocal,
+    userName: props.userName
+  })
+
+  if (newHasVideo && props.stream && videoElement.value) {
+    setupVideoElement()
+  }
+})
+
 // Set up video element when mounted
 onMounted(() => {
-  if (videoElement.value && props.stream) {
-    videoElement.value.srcObject = props.stream
+  console.log('VideoTile mounted:', {
+    hasVideo: props.hasVideo,
+    stream: !!props.stream,
+    isLocal: props.isLocal,
+    userName: props.userName
+  })
+
+  if (props.stream && props.hasVideo) {
+    setupVideoElement()
   }
 })
 </script>
@@ -111,7 +179,7 @@ onMounted(() => {
   >
     <!-- Video Element -->
     <video
-        v-if="hasVideo && stream"
+        v-show="shouldShowVideo"
         ref="videoElement"
         class="video-element"
         :muted="isLocal"
@@ -121,7 +189,7 @@ onMounted(() => {
 
     <!-- Avatar Placeholder -->
     <div
-        v-else
+        v-show="!shouldShowVideo"
         class="avatar-placeholder d-flex align-center justify-center fill-height"
     >
       <v-avatar :size="avatarSize" :color="avatarColor">
@@ -129,74 +197,80 @@ onMounted(() => {
           {{ isScreenSharing ? 'mdi-monitor' : 'mdi-account' }}
         </v-icon>
       </v-avatar>
+
+      <div class="text-center mt-3">
+        <div class="text-subtitle-2 font-weight-medium">{{ displayName }}</div>
+        <div v-if="!hasVideo" class="text-caption text-disabled">Camera off</div>
+        <div v-else-if="!stream" class="text-caption text-disabled">Connecting...</div>
+      </div>
     </div>
 
     <!-- Overlay Information -->
-    <v-overlay
-        :model-value="true"
-        contained
-        class="overlay-info"
-        opacity="0"
-    >
-      <!-- Top Bar -->
-      <div class="overlay-top d-flex align-center justify-space-between pa-2">
-        <!-- User Name -->
-        <v-chip
-            :color="isLocal ? 'primary' : 'default'"
-            size="small"
-            class="font-weight-medium"
-        >
-          <v-icon v-if="isLocal" start size="16">mdi-account-circle</v-icon>
-          {{ displayName }}
-        </v-chip>
+    <div class="overlay-info">
+      <!-- Top Overlay: Name and Status -->
+      <div class="overlay-top pa-2">
+        <div class="d-flex align-center justify-between">
+          <div class="d-flex align-center gap-1">
+            <span class="text-white text-body-2 font-weight-medium">{{ displayName }}</span>
+            <v-chip
+                v-if="isLocal"
+                size="x-small"
+                color="primary"
+                variant="flat"
+            >
+              You
+            </v-chip>
+          </div>
 
-        <!-- Connection Status -->
-        <v-chip
-            v-if="!isLocal"
-            :color="statusColor"
-            size="x-small"
-            :prepend-icon="statusIcon"
-        >
-          {{ statusText }}
-        </v-chip>
-      </div>
-
-      <!-- Bottom Bar -->
-      <div class="overlay-bottom d-flex align-center justify-space-between pa-2">
-        <!-- Media Status -->
-        <div class="d-flex gap-1">
-          <v-btn
-              :color="hasAudio ? 'success' : 'error'"
-              :icon="hasAudio ? 'mdi-microphone' : 'mdi-microphone-off'"
-              size="x-small"
-              variant="flat"
-              class="media-indicator"
-          />
-          <v-btn
-              :color="hasVideo ? 'success' : 'error'"
-              :icon="hasVideo ? 'mdi-video' : 'mdi-video-off'"
-              size="x-small"
-              variant="flat"
-              class="media-indicator"
-          />
-          <v-btn
-              v-if="isScreenSharing"
-              color="info"
-              icon="mdi-monitor-share"
-              size="x-small"
-              variant="flat"
-              class="media-indicator"
-          />
-        </div>
-
-        <!-- Volume Indicator -->
-        <div v-if="hasAudio && !isLocal" class="volume-indicator">
-          <v-icon size="16" :color="volumeColor">
-            {{ volumeIcon }}
-          </v-icon>
+          <!-- Connection Status -->
+          <div v-if="!isLocal" class="d-flex align-center gap-1">
+            <v-icon :color="statusColor" size="16">{{ statusIcon }}</v-icon>
+            <span class="text-white text-caption">{{ statusText }}</span>
+          </div>
         </div>
       </div>
-    </v-overlay>
+
+      <!-- Bottom Overlay: Media Controls -->
+      <div class="overlay-bottom pa-2">
+        <div class="d-flex align-center justify-between">
+          <!-- Media Status Indicators -->
+          <div class="d-flex gap-1">
+            <v-btn
+                :color="hasAudio ? 'success' : 'error'"
+                :icon="hasAudio ? 'mdi-microphone' : 'mdi-microphone-off'"
+                size="x-small"
+                variant="flat"
+                class="media-indicator"
+                disabled
+            />
+            <v-btn
+                :color="hasVideo ? 'success' : 'error'"
+                :icon="hasVideo ? 'mdi-video' : 'mdi-video-off'"
+                size="x-small"
+                variant="flat"
+                class="media-indicator"
+                disabled
+            />
+            <v-btn
+                v-if="isScreenSharing"
+                color="info"
+                icon="mdi-monitor-share"
+                size="x-small"
+                variant="flat"
+                class="media-indicator"
+                disabled
+            />
+          </div>
+
+          <!-- Volume Indicator -->
+          <div v-if="hasAudio && !isLocal" class="volume-indicator">
+            <v-icon size="16" :color="volumeColor">
+              {{ volumeIcon }}
+            </v-icon>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <!-- Loading State -->
     <v-overlay
@@ -212,7 +286,7 @@ onMounted(() => {
             size="32"
             class="mb-2"
         />
-        <div class="text-caption">Connecting...</div>
+        <div class="text-caption text-white">Connecting...</div>
       </div>
     </v-overlay>
   </v-card>
@@ -231,10 +305,12 @@ onMounted(() => {
   border-radius: 12px;
   background-color: #000;
 }
+
 .avatar-placeholder {
-  background-color: #f0f0f0;
+  background: linear-gradient(135deg, #f5f5f5 0%, #e0e0e0 100%);
   border-radius: 12px;
 }
+
 .overlay-info {
   position: absolute;
   top: 0;
@@ -242,33 +318,37 @@ onMounted(() => {
   right: 0;
   bottom: 0;
   pointer-events: none;
+  z-index: 1;
 }
+
 .overlay-top, .overlay-bottom {
   position: absolute;
   left: 0;
   right: 0;
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.7), transparent);
 }
+
 .overlay-top {
   top: 0;
-  background: rgba(0, 0, 0, 0.5);
 }
+
 .overlay-bottom {
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.7), transparent);
 }
+
 .media-indicator {
-  min-width: 32px;
-  min-height: 32px;
+  min-width: 28px;
+  min-height: 28px;
+  pointer-events: auto;
 }
+
 .volume-indicator {
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.video-tile {
-  position: relative;
-  overflow: hidden;
-}
+
 .fill-height {
   height: 100%;
 }

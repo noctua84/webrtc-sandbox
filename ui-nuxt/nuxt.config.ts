@@ -2,7 +2,7 @@
 export default defineNuxtConfig({
     compatibilityDate: '2025-05-15',
     devtools: { enabled: true },
-    css: ['vuetify/lib/styles/main.sass', '@mdi/font/css/materialdesignicons.css'],
+    css: ['vuetify/lib/styles/main.sass', '@mdi/font/css/materialdesignicons.css', 'vuetify/styles'],
     build: {
         transpile: ['vuetify'],
     },
@@ -19,6 +19,7 @@ export default defineNuxtConfig({
             })
         },
     ],
+    plugins: ['~/plugins/vuetify.ts'],
     vite: {
         define: {
             'process.env.DEBUG': false,
