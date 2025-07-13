@@ -1,12 +1,5 @@
 <template>
-  <v-app>
-    <v-main>
-      <NuxtPage />
-    </v-main>
-  </v-app>
+  <NuxtLayout>
+    <NuxtPage />
+  </NuxtLayout>
 </template>
-
-<script setup lang="ts">
-// Auto-imports work with Nuxt 3, so no explicit imports needed
-// The page content will be rendered through NuxtPage
-</script>

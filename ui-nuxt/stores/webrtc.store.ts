@@ -1,10 +1,19 @@
 // stores/webrtc.ts
-import { defineStore } from 'pinia'
-import { ref, computed, readonly, onBeforeUnmount } from 'vue'
+import {defineStore} from 'pinia'
+import {computed, onBeforeUnmount, readonly, ref} from 'vue'
 
-import { useSocket } from '../composables/useSocket'
-import { useRoomStore } from './room'
-import type {PeerConnection, MediaDevices, MediaStatus, MediaStatusUpdate, ConnectionStatus, StreamUpdate, ICECandidate, WebRTCIceCandidate, WebRTCOffer, WebRTCAnswer} from "../types/webrtc.types";
+import {useSocketIO} from '~/composables/useSocketIO'
+import {useRoomStore} from './room.store'
+import type {
+    ConnectionStatus,
+    ICECandidate,
+    MediaDevices,
+    MediaStatusUpdate,
+    PeerConnection,
+    StreamUpdate,
+    WebRTCAnswer,
+    WebRTCOffer
+} from "~/types/webrtc.types";
 
 // ============================================================================
 // CONSTANTS & CONFIGURATION
@@ -66,7 +75,7 @@ export const useWebRTCStore = defineStore('webrtc', () => {
     const connectionRetryAttempts = ref<Map<string, number>>(new Map())
 
     // Composables
-    const { emit, on, off } = useSocket()
+    const { emit, on, off } = useSocketIO()
     const roomStore = useRoomStore()
 
     // ========================================================================
@@ -234,14 +243,13 @@ export const useWebRTCStore = defineStore('webrtc', () => {
                 } : false
             }
 
-            const stream = await navigator.mediaDevices.getUserMedia(constraints)
-            localStream.value = stream
+            localStream.value = await navigator.mediaDevices.getUserMedia(constraints)
             hasVideo.value = video
             hasAudio.value = audio
             isScreenSharing.value = false
 
             await getAvailableDevices()
-            updateMediaStatus()
+            await updateMediaStatus()
 
             // Auto-connect to existing participants
             if (roomStore.participants.length > 1) {
@@ -281,14 +289,16 @@ export const useWebRTCStore = defineStore('webrtc', () => {
             await updateMediaStatus()
 
             // Update all peer connections with new stream
-            peerConnections.value.forEach(async (peer) => {
-                const videoSender = peer.connection.getSenders().find(
-                    sender => sender.track?.kind === 'video'
-                )
-                if (videoSender && screenStream.getVideoTracks()[0]) {
-                    await videoSender.replaceTrack(screenStream.getVideoTracks()[0])
-                }
-            })
+            await Promise.all(
+                Array.from(peerConnections.value.values()).map(async (peer) => {
+                    const videoSender = peer.connection.getSenders().find(
+                        sender => sender.track?.kind === 'video'
+                    )
+                    if (videoSender && screenStream.getVideoTracks()[0]) {
+                        return videoSender.replaceTrack(screenStream.getVideoTracks()[0])
+                    }
+                })
+            )
         } catch (error) {
             console.error('Failed to start screen share:', error)
             throw error
@@ -353,6 +363,42 @@ export const useWebRTCStore = defineStore('webrtc', () => {
             hasAudio: hasAudio.value,
             isScreenSharing: isScreenSharing.value
         })
+    }
+
+    // Add new method to switch video device
+    const switchVideoDevice = async (deviceId: string): Promise<void> => {
+        if (!localStream.value || deviceId === selectedVideoDevice.value) return
+
+        try {
+            selectedVideoDevice.value = deviceId
+
+            // If we have active media, restart it with the new device
+            if (hasVideo.value) {
+                const audioEnabled = hasAudio.value
+                await startMedia(true, audioEnabled)
+            }
+        } catch (error) {
+            console.error('Failed to switch video device:', error)
+            throw error
+        }
+    }
+
+    // Add new method to switch audio device
+    const switchAudioDevice = async (deviceId: string): Promise<void> => {
+        if (!localStream.value || deviceId === selectedAudioDevice.value) return
+
+        try {
+            selectedAudioDevice.value = deviceId
+
+            // If we have active media, restart it with the new device
+            if (hasAudio.value) {
+                const videoEnabled = hasVideo.value
+                await startMedia(videoEnabled, true)
+            }
+        } catch (error) {
+            console.error('Failed to switch audio device:', error)
+            throw error
+        }
     }
 
     // ========================================================================
@@ -543,6 +589,8 @@ export const useWebRTCStore = defineStore('webrtc', () => {
         toggleAudio,
         handleNewParticipant,
         connectToAllParticipants,
-        cleanup
+        cleanup,
+        switchAudioDevice,
+        switchVideoDevice
     }
 })

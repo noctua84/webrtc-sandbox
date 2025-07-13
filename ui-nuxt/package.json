@@ -1,30 +1,28 @@
 {
-  "name": "webrtc-ui-nuxt",
-  "version": "1.0.0",
-  "description": "WebRTC Video Streaming UI - Nuxt 3 with Vue 3, Pinia, and Vuetify",
+  "name": "nuxt-app",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "nuxt build",
-    "dev": "nuxt dev --port 5174",
+    "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare"
   },
-  "devDependencies": {
-    "@nuxt/devtools": "latest",
-    "@nuxt/typescript-build": "^3.0.2",
-    "nuxt": "^3.8.0",
-    "typescript": "^5.3.3",
-    "vite-plugin-vuetify": "^2.1.1",
-    "vue": "^3.5.17"
-  },
   "dependencies": {
     "@mdi/font": "^7.4.47",
-    "@pinia/nuxt": "^0.5.5",
-    "@vueuse/nuxt": "^10.5.0",
-    "pinia": "^2.1.7",
+    "@pinia/nuxt": "^0.11.1",
+    "@vueuse/nuxt": "^13.5.0",
+    "nuxt": "^3.17.6",
+    "pinia": "^3.0.3",
     "socket.io-client": "^4.8.1",
-    "uuid": "^9.0.1",
-    "vuetify": "^3.4.8"
+    "vue": "^3.5.17",
+    "vue-router": "^4.5.1",
+    "vuetify": "^3.9.0"
+  },
+  "devDependencies": {
+    "@nuxt/devtools": "^2.6.2",
+    "sass": "^1.89.2",
+    "vite-plugin-vuetify": "^2.1.1"
   }
 }

@@ -1,27 +1,5 @@
-<template>
-  <div v-if="typingUsers.length > 0" class="typing-indicator">
-    <div class="typing-bubble">
-      <div class="typing-content">
-        <!-- Typing Animation Dots -->
-        <div class="typing-dots">
-          <div class="dot"></div>
-          <div class="dot"></div>
-          <div class="dot"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Typing Status Text -->
-    <div class="typing-text">
-      <span class="text-caption text-medium-emphasis">
-        {{ typingStatusText }}
-      </span>
-    </div>
-  </div>
-</template>
-
 <script setup lang="ts">
-import { useChatStore } from '../stores/chat'
+import { useChatStore } from '~/stores/chat.store'
 import { computed } from 'vue'
 
 // Stores
@@ -50,6 +28,28 @@ const typingStatusText = computed(() => {
   return `${count} people are typing...`
 })
 </script>
+
+<template>
+  <div v-if="typingUsers.length > 0" class="typing-indicator">
+    <div class="typing-bubble">
+      <div class="typing-content">
+        <!-- Typing Animation Dots -->
+        <div class="typing-dots">
+          <div class="dot"></div>
+          <div class="dot"></div>
+          <div class="dot"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Typing Status Text -->
+    <div class="typing-text">
+      <span class="text-caption text-medium-emphasis">
+        {{ typingStatusText }}
+      </span>
+    </div>
+  </div>
+</template>
 
 <style scoped>
 .typing-indicator {

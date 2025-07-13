@@ -1,11 +1,11 @@
 export interface Room {
     id: string
-    createdAt: string
-    lastActivity: string
-    participantCount: number
-    maxParticipants: number
+    createdAt?: string
+    lastActivity?: string
+    participantCount?: number
+    maxParticipants?: number
     isActive: boolean
-    timeoutDuration: number
+    timeoutDuration?: number
 }
 
 export interface Participant {

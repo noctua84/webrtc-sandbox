@@ -1,3 +1,108 @@
+<script setup lang="ts">
+import { ref, computed, watch, onMounted } from 'vue'
+
+interface Props {
+  stream: MediaStream | null
+  userName: string
+  hasVideo?: boolean
+  hasAudio?: boolean
+  isScreenSharing?: boolean
+  isLocal?: boolean
+  connectionState?: string
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  hasVideo: false,
+  hasAudio: false,
+  isScreenSharing: false,
+  isLocal: false,
+  connectionState: 'no-connection'
+})
+
+// Template refs
+const videoElement = ref<HTMLVideoElement>()
+
+// Computed
+const displayName = computed(() => props.isLocal ? 'You' : props.userName)
+
+const cardColor = computed(() => {
+  if (props.isLocal) return 'primary'
+  if (props.connectionState === 'connected') return 'surface'
+  if (props.connectionState === 'connecting') return 'warning'
+  return 'error'
+})
+
+const cardVariant = computed(() => {
+  return props.isLocal ? 'tonal' : 'outlined'
+})
+
+const avatarSize = computed(() => {
+  // Responsive avatar size based on tile size
+  return 64
+})
+
+const iconSize = computed(() => {
+  return avatarSize.value * 0.6
+})
+
+const avatarColor = computed(() => {
+  if (props.isLocal) return 'primary'
+  return 'grey'
+})
+
+const statusColor = computed(() => {
+  switch (props.connectionState) {
+    case 'connected': return 'success'
+    case 'connecting': return 'warning'
+    case 'new': return 'info'
+    case 'no-connection': return 'grey'
+    default: return 'error'
+  }
+})
+
+const statusIcon = computed(() => {
+  switch (props.connectionState) {
+    case 'connected': return 'mdi-check-circle'
+    case 'connecting': return 'mdi-loading'
+    case 'new': return 'mdi-circle-outline'
+    case 'no-connection': return 'mdi-circle-off-outline'
+    default: return 'mdi-alert-circle'
+  }
+})
+
+const statusText = computed(() => {
+  switch (props.connectionState) {
+    case 'connected': return 'Connected'
+    case 'connecting': return 'Connecting'
+    case 'new': return 'New'
+    case 'no-connection': return 'No Connection'
+    default: return 'Failed'
+  }
+})
+
+const isConnecting = computed(() => {
+  return !props.isLocal && ['connecting', 'new'].includes(props.connectionState)
+})
+
+// Volume indicator (placeholder - would need audio analysis)
+const volumeColor = computed(() => 'success')
+const volumeIcon = computed(() => 'mdi-volume-medium')
+
+// Watch for stream changes
+watch(() => props.stream, (newStream) => {
+  if (videoElement.value && newStream) {
+    videoElement.value.srcObject = newStream
+  }
+}, { immediate: true })
+
+// Set up video element when mounted
+onMounted(() => {
+  if (videoElement.value && props.stream) {
+    videoElement.value.srcObject = props.stream
+  }
+})
+</script>
+
 <template>
   <v-card
       :color="cardColor"
@@ -112,111 +217,6 @@
     </v-overlay>
   </v-card>
 </template>
-
-<script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
-
-interface Props {
-  stream: MediaStream | null
-  userName: string
-  hasVideo?: boolean
-  hasAudio?: boolean
-  isScreenSharing?: boolean
-  isLocal?: boolean
-  connectionState?: string
-}
-
-const props = withDefaults(defineProps<Props>(), {
-  hasVideo: false,
-  hasAudio: false,
-  isScreenSharing: false,
-  isLocal: false,
-  connectionState: 'no-connection'
-})
-
-// Template refs
-const videoElement = ref<HTMLVideoElement>()
-
-// Computed
-const displayName = computed(() => props.isLocal ? 'You' : props.userName)
-
-const cardColor = computed(() => {
-  if (props.isLocal) return 'primary'
-  if (props.connectionState === 'connected') return 'surface'
-  if (props.connectionState === 'connecting') return 'warning'
-  return 'error'
-})
-
-const cardVariant = computed(() => {
-  return props.isLocal ? 'tonal' : 'outlined'
-})
-
-const avatarSize = computed(() => {
-  // Responsive avatar size based on tile size
-  return 64
-})
-
-const iconSize = computed(() => {
-  return avatarSize.value * 0.6
-})
-
-const avatarColor = computed(() => {
-  if (props.isLocal) return 'primary'
-  return 'grey'
-})
-
-const statusColor = computed(() => {
-  switch (props.connectionState) {
-    case 'connected': return 'success'
-    case 'connecting': return 'warning'
-    case 'new': return 'info'
-    case 'no-connection': return 'grey'
-    default: return 'error'
-  }
-})
-
-const statusIcon = computed(() => {
-  switch (props.connectionState) {
-    case 'connected': return 'mdi-check-circle'
-    case 'connecting': return 'mdi-loading'
-    case 'new': return 'mdi-circle-outline'
-    case 'no-connection': return 'mdi-circle-off-outline'
-    default: return 'mdi-alert-circle'
-  }
-})
-
-const statusText = computed(() => {
-  switch (props.connectionState) {
-    case 'connected': return 'Connected'
-    case 'connecting': return 'Connecting'
-    case 'new': return 'New'
-    case 'no-connection': return 'No Connection'
-    default: return 'Failed'
-  }
-})
-
-const isConnecting = computed(() => {
-  return !props.isLocal && ['connecting', 'new'].includes(props.connectionState)
-})
-
-// Volume indicator (placeholder - would need audio analysis)
-const volumeColor = computed(() => 'success')
-const volumeIcon = computed(() => 'mdi-volume-medium')
-
-// Watch for stream changes
-watch(() => props.stream, (newStream) => {
-  if (videoElement.value && newStream) {
-    videoElement.value.srcObject = newStream
-  }
-}, { immediate: true })
-
-// Set up video element when mounted
-onMounted(() => {
-  if (videoElement.value && props.stream) {
-    videoElement.value.srcObject = props.stream
-  }
-})
-</script>
 
 <style scoped>
 .video-tile {

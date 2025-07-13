@@ -1,7 +1,7 @@
 // stores/room.ts - Room business logic and state management
 import { defineStore } from 'pinia'
 import { ref, computed, readonly, watch } from 'vue'
-import { useSocket } from '~/composables/useSocket'
+import { useSocketIO } from '~/composables/useSocketIO'
 import type {
     Room,
     Participant,
@@ -36,7 +36,7 @@ export const useRoomStore = defineStore('room', () => {
     const isInitialized = ref(false)
 
     // Get socket composable for communication
-    const socketStore = useSocket({ autoConnect: true })
+    const socketStore = useSocketIO({ autoConnect: true })
 
     // Utility functions
     const setError = (message: string, code?: string) => {
@@ -60,7 +60,7 @@ export const useRoomStore = defineStore('room', () => {
 
     // Reconnection data management
     const getStoredReconnectionData = (): ReconnectionData | null => {
-        if (!process.client) return null
+        if (!import.meta.client) return null
 
         try {
             const stored = localStorage.getItem(RECONNECTION_STORAGE_KEY)
@@ -83,7 +83,7 @@ export const useRoomStore = defineStore('room', () => {
     }
 
     const storeReconnectionData = (data: ReconnectionData) => {
-        if (!process.client) return
+        if (!import.meta.client) return
 
         try {
             localStorage.setItem(RECONNECTION_STORAGE_KEY, JSON.stringify(data))
@@ -94,7 +94,7 @@ export const useRoomStore = defineStore('room', () => {
     }
 
     const clearReconnectionData = () => {
-        if (!process.client) return
+        if (!import.meta.client) return
 
         localStorage.removeItem(RECONNECTION_STORAGE_KEY)
         debugLog('Reconnection data cleared')

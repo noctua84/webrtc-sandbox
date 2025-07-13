@@ -1,8 +1,8 @@
 // stores/chat.ts - Chat business logic separation
 import { defineStore } from 'pinia'
 import { ref, computed, readonly } from 'vue'
-import { useSocket } from '~/composables/useSocket'
-import { useRoomStore } from '~/stores/room'
+import { useSocketIO } from '~/composables/useSocketIO'
+import { useRoomStore } from '~/stores/room.store'
 import type {
     ChatMessage,
     SendMessageRequest,
@@ -22,7 +22,7 @@ export const useChatStore = defineStore('chat', () => {
     const isInitialized = ref(false)
 
     // Get dependencies
-    const socketStore = useSocket()
+    const socketStore = useSocketIO()
     const roomStore = useRoomStore()
 
     // Utility functions

@@ -1,3 +1,158 @@
+<script setup lang="ts">
+import { useWebRTCStore } from '~/stores/webrtc.store'
+import { useRoomStore } from '~/stores/room.store'
+import { ref, computed, onMounted } from 'vue'
+
+// Stores
+const webrtcStore = useWebRTCStore()
+const roomStore = useRoomStore()
+
+// Local state
+const showDeviceSettings = ref(false)
+const selectedQuality = ref('720p')
+
+// Computed
+const connectedCount = computed(() => {
+  return Array.from(webrtcStore.peerConnections.values())
+      .filter(peer => peer.connection.connectionState === 'connected').length
+})
+
+const otherParticipantsCount = computed(() => {
+  return roomStore.participants.filter(
+      p => p.socketId !== roomStore.currentParticipant?.socketId
+  ).length
+})
+
+const connectionProgress = computed(() => {
+  if (otherParticipantsCount.value === 0) return 100
+  return (connectedCount.value / otherParticipantsCount.value) * 100
+})
+
+const peerConnectionsArray = computed(() => {
+  return Array.from(webrtcStore.peerConnections.values())
+})
+
+const videoDeviceItems = computed(() => {
+  return webrtcStore.availableDevices.videoDevices.map(device => ({
+    title: device.label || `Camera ${device.deviceId.slice(0, 8)}`,
+    value: device.deviceId
+  }))
+})
+
+const audioDeviceItems = computed(() => {
+  return webrtcStore.availableDevices.audioDevices.map(device => ({
+    title: device.label || `Microphone ${device.deviceId.slice(0, 8)}`,
+    value: device.deviceId
+  }))
+})
+
+const qualityOptions = [
+  { title: 'High (1080p)', value: '1080p' },
+  { title: 'Medium (720p)', value: '720p' },
+  { title: 'Low (480p)', value: '480p' }
+]
+
+// Methods
+const startMedia = async () => {
+  try {
+    await webrtcStore.startMedia()
+  } catch (error) {
+    console.error('Failed to start media:', error)
+  }
+}
+
+const stopMedia = () => {
+  webrtcStore.stopMedia()
+}
+
+const toggleVideo = () => {
+  webrtcStore.toggleVideo()
+}
+
+const toggleAudio = () => {
+  webrtcStore.toggleAudio()
+}
+
+const toggleScreenShare = async () => {
+  try {
+    if (webrtcStore.isScreenSharing) {
+      await webrtcStore.stopScreenShare()
+    } else {
+      await webrtcStore.startScreenShare()
+    }
+  } catch (error) {
+    console.error('Failed to toggle screen share:', error)
+  }
+}
+
+const refreshDevices = async () => {
+  try {
+    await webrtcStore.getAvailableDevices()
+  } catch (error) {
+    console.error('Failed to refresh devices:', error)
+  }
+}
+
+const onVideoDeviceChange = async (deviceId: string) => {
+  try {
+    await webrtcStore.switchVideoDevice(deviceId)
+  } catch (error) {
+    console.error('Failed to switch video device:', error)
+  }
+}
+
+const onAudioDeviceChange = async (deviceId: string) => {
+  try {
+    await webrtcStore.switchAudioDevice(deviceId)
+  } catch (error) {
+    console.error('Failed to switch audio device:', error)
+  }
+}
+
+// Helper functions
+const getConnectionColor = (state: RTCPeerConnectionState) => {
+  switch (state) {
+    case 'connected': return 'success'
+    case 'connecting': return 'warning'
+    case 'new': return 'info'
+    case 'disconnected':
+    case 'failed': return 'error'
+    default: return 'grey'
+  }
+}
+
+const getConnectionIcon = (state: RTCPeerConnectionState) => {
+  switch (state) {
+    case 'connected': return 'mdi-check'
+    case 'connecting': return 'mdi-loading'
+    case 'new': return 'mdi-circle-outline'
+    case 'disconnected':
+    case 'failed': return 'mdi-close'
+    default: return 'mdi-help'
+  }
+}
+
+const getConnectionText = (state: RTCPeerConnectionState) => {
+  switch (state) {
+    case 'connected': return 'Connected'
+    case 'connecting': return 'Connecting...'
+    case 'new': return 'Establishing...'
+    case 'disconnected': return 'Disconnected'
+    case 'failed': return 'Failed'
+    default: return 'Unknown'
+  }
+}
+
+const isConnecting = (state: RTCPeerConnectionState) => {
+  return ['connecting', 'new'].includes(state)
+}
+
+// Initialize devices on mount
+onMounted(() => {
+  webrtcStore.getAvailableDevices()
+})
+</script>
+
 <template>
   <v-card elevation="2" class="ma-2">
     <v-card-title class="d-flex align-center">
@@ -134,21 +289,21 @@
             >
               <div class="d-flex align-center justify-space-between">
                 <div class="d-flex align-center gap-2">
-                  <v-avatar size="24" :color="getConnectionColor(peer.connectionState)">
+                  <v-avatar size="24" :color="getConnectionColor(peer.connection.connectionState)">
                     <v-icon size="16" color="white">
-                      {{ getConnectionIcon(peer.connectionState) }}
+                      {{ getConnectionIcon(peer.connection.connectionState) }}
                     </v-icon>
                   </v-avatar>
                   <div>
                     <div class="text-body-2 font-weight-medium">{{ peer.userName }}</div>
                     <div class="text-caption text-medium-emphasis">
-                      {{ getConnectionText(peer.connectionState) }}
+                      {{ getConnectionText(peer.connection.connectionState) }}
                     </div>
                   </div>
                 </div>
 
                 <!-- Connection Quality -->
-                <div v-if="peer.connectionState === 'connected'" class="d-flex gap-1">
+                <div v-if="peer.connection.connectionState === 'connected'" class="d-flex gap-1">
                   <div class="connection-bar bg-success"></div>
                   <div class="connection-bar bg-success"></div>
                   <div class="connection-bar bg-success"></div>
@@ -156,7 +311,7 @@
 
                 <!-- Loading indicator -->
                 <v-progress-circular
-                    v-else-if="isConnecting(peer.connectionState)"
+                    v-else-if="isConnecting(peer.connection.connectionState)"
                     size="20"
                     width="2"
                     indeterminate
@@ -180,14 +335,6 @@
             >
               <v-icon start size="16">mdi-refresh</v-icon>
               Reconnect All
-            </v-btn>
-            <v-btn
-                variant="outlined"
-                size="small"
-                @click="webrtcStore.clearLogs"
-            >
-              <v-icon start size="16">mdi-delete</v-icon>
-              Clear Logs
             </v-btn>
           </div>
         </v-col>
@@ -256,161 +403,6 @@
     </v-dialog>
   </v-card>
 </template>
-
-<script setup lang="ts">
-import { useWebRTCStore } from '../stores/webrtc'
-import { useRoomStore } from '../stores/room'
-import { ref, computed, onMounted } from 'vue'
-
-// Stores
-const webrtcStore = useWebRTCStore()
-const roomStore = useRoomStore()
-
-// Local state
-const showDeviceSettings = ref(false)
-const selectedQuality = ref('720p')
-
-// Computed
-const connectedCount = computed(() => {
-  return Array.from(webrtcStore.peerConnections.values())
-      .filter(peer => peer.connectionState === 'connected').length
-})
-
-const otherParticipantsCount = computed(() => {
-  return roomStore.participants.filter(
-      p => p.socketId !== roomStore.currentParticipant?.socketId
-  ).length
-})
-
-const connectionProgress = computed(() => {
-  if (otherParticipantsCount.value === 0) return 100
-  return (connectedCount.value / otherParticipantsCount.value) * 100
-})
-
-const peerConnectionsArray = computed(() => {
-  return Array.from(webrtcStore.peerConnections.values())
-})
-
-const videoDeviceItems = computed(() => {
-  return webrtcStore.availableDevices.videoDevices.map(device => ({
-    title: device.label || `Camera ${device.deviceId.slice(0, 8)}`,
-    value: device.deviceId
-  }))
-})
-
-const audioDeviceItems = computed(() => {
-  return webrtcStore.availableDevices.audioDevices.map(device => ({
-    title: device.label || `Microphone ${device.deviceId.slice(0, 8)}`,
-    value: device.deviceId
-  }))
-})
-
-const qualityOptions = [
-  { title: 'High (1080p)', value: '1080p' },
-  { title: 'Medium (720p)', value: '720p' },
-  { title: 'Low (480p)', value: '480p' }
-]
-
-// Methods
-const startMedia = async () => {
-  try {
-    await webrtcStore.startMedia()
-  } catch (error) {
-    console.error('Failed to start media:', error)
-  }
-}
-
-const stopMedia = () => {
-  webrtcStore.stopMedia()
-}
-
-const toggleVideo = () => {
-  webrtcStore.toggleVideo()
-}
-
-const toggleAudio = () => {
-  webrtcStore.toggleAudio()
-}
-
-const toggleScreenShare = async () => {
-  try {
-    if (webrtcStore.isScreenSharing) {
-      await webrtcStore.stopScreenShare()
-    } else {
-      await webrtcStore.startScreenShare()
-    }
-  } catch (error) {
-    console.error('Failed to toggle screen share:', error)
-  }
-}
-
-const refreshDevices = async () => {
-  try {
-    await webrtcStore.enumerateDevices()
-  } catch (error) {
-    console.error('Failed to refresh devices:', error)
-  }
-}
-
-const onVideoDeviceChange = async (deviceId: string) => {
-  try {
-    await webrtcStore.switchVideoDevice(deviceId)
-  } catch (error) {
-    console.error('Failed to switch video device:', error)
-  }
-}
-
-const onAudioDeviceChange = async (deviceId: string) => {
-  try {
-    await webrtcStore.switchAudioDevice(deviceId)
-  } catch (error) {
-    console.error('Failed to switch audio device:', error)
-  }
-}
-
-// Helper functions
-const getConnectionColor = (state: RTCPeerConnectionState) => {
-  switch (state) {
-    case 'connected': return 'success'
-    case 'connecting': return 'warning'
-    case 'new': return 'info'
-    case 'disconnected':
-    case 'failed': return 'error'
-    default: return 'grey'
-  }
-}
-
-const getConnectionIcon = (state: RTCPeerConnectionState) => {
-  switch (state) {
-    case 'connected': return 'mdi-check'
-    case 'connecting': return 'mdi-loading'
-    case 'new': return 'mdi-circle-outline'
-    case 'disconnected':
-    case 'failed': return 'mdi-close'
-    default: return 'mdi-help'
-  }
-}
-
-const getConnectionText = (state: RTCPeerConnectionState) => {
-  switch (state) {
-    case 'connected': return 'Connected'
-    case 'connecting': return 'Connecting...'
-    case 'new': return 'Establishing...'
-    case 'disconnected': return 'Disconnected'
-    case 'failed': return 'Failed'
-    default: return 'Unknown'
-  }
-}
-
-const isConnecting = (state: RTCPeerConnectionState) => {
-  return ['connecting', 'new'].includes(state)
-}
-
-// Initialize devices on mount
-onMounted(() => {
-  webrtcStore.enumerateDevices()
-})
-</script>
 
 <style scoped>
 .gap-2 {

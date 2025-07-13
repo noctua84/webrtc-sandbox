@@ -1,12 +1,15 @@
-// composables/useSocket.ts - Clean communication layer only
-import { io, type Socket } from 'socket.io-client'
-import { ref, readonly, computed } from 'vue'
-import { useRuntimeConfig } from '#imports'
-import type { ConnectionStatus, LogEntry, LogLevel, LogData } from "~/types"
+import {io, type Socket} from "socket.io-client";
+import type {LogData, LogEntry, LogLevel} from "~/types/logging.types";
+import type {SocketConnectionStatus, UseSocketOptions} from "~/types/socket.types";
 
-interface UseSocketOptions {
-    autoConnect?: boolean
-    url?: string
+const globalSocketState = {
+    socket: null as Socket | null,
+    isConnected: ref(false),
+    isConnecting: ref(false),
+    connectionError: ref<string | null>(null),
+    initialized: false,
+    pendingListeners: [] as Array<{ event: string, handler: (...args: any[]) => void }>,
+    logs: ref<LogEntry[]>([]),
 }
 
 const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEntry => ({
@@ -17,24 +20,10 @@ const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEn
     data: data ? JSON.stringify(data, null, 2) : null
 })
 
-// Minimal global state - only connection management
-const globalSocketState = {
-    socket: null as Socket | null,
-    isConnected: ref(false),
-    isConnecting: ref(false),
-    connectionError: ref<string | null>(null),
-    logs: ref<LogEntry[]>([]),
-    initialized: false,
-    pendingListeners: [] as Array<{ event: string, handler: (...args: any[]) => void }>
-}
-
-export const useSocket = (options: UseSocketOptions = {}) => {
+export const useSocketIO = (options: UseSocketOptions = {}) => {
     const config = useRuntimeConfig()
-
-    const {
-        autoConnect = false,
-        url = config?.public?.serverUrl as string || 'http://localhost:3001'
-    } = options
+    const url = options.url || config?.public?.socketServerUrl as string || 'http://localhost:3001'
+    const autoConnect = options.autoConnect || config?.public?.socketAutoConnect === 'true'
 
     // Simple logging
     const addLog = (level: LogLevel, message: string, data?: LogData) => {
@@ -350,7 +339,7 @@ export const useSocket = (options: UseSocketOptions = {}) => {
     }
 
     // Computed connection status
-    const connectionStatus = computed<ConnectionStatus>(() => {
+    const connectionStatus = computed<SocketConnectionStatus>(() => {
         if (globalSocketState.isConnecting.value) return 'connecting'
         if (globalSocketState.isConnected.value) return 'connected'
         if (globalSocketState.connectionError.value) return 'error'

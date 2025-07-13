@@ -1,3 +1,116 @@
+<script setup lang="ts">
+import { ref, watch, onMounted, nextTick } from 'vue'
+import { useChatStore } from '@/stores/chat.store'
+import { useRoomStore } from '@/stores/room.store'
+import ChatMessage from './ChatMessage.vue'
+import ChatInput from './ChatInput.vue'
+import TypingIndicator from './TypingIndicator.vue'
+
+// Stores
+const chatStore = useChatStore()
+const roomStore = useRoomStore()
+
+// Local state
+const isCollapsed = ref(false)
+const hasLoadedHistory = ref(false)
+const isNearBottom = ref(true)
+
+// Template refs
+const messagesContainer = ref<HTMLElement>()
+const messagesEnd = ref<HTMLElement>()
+
+// Methods
+const toggleCollapse = () => {
+  isCollapsed.value = !isCollapsed.value
+
+  // Auto-scroll when expanding
+  if (!isCollapsed.value) {
+    nextTick(() => {
+      scrollToBottom()
+    })
+  }
+}
+
+const scrollToBottom = (smooth = true) => {
+  if (messagesContainer.value) {
+    messagesContainer.value.scrollTo({
+      top: messagesContainer.value.scrollHeight,
+      behavior: smooth ? 'smooth' : 'auto'
+    })
+  }
+}
+
+const onScroll = () => {
+  if (!messagesContainer.value) return
+
+  const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
+  const threshold = 100 // pixels from bottom
+
+  isNearBottom.value = scrollHeight - scrollTop - clientHeight < threshold
+}
+
+// Auto-scroll to bottom when new messages arrive (only if user is near bottom)
+watch(() => chatStore.messages.length, () => {
+  if (isNearBottom.value && !isCollapsed.value) {
+    nextTick(() => {
+      scrollToBottom()
+    })
+  }
+})
+
+// Load chat history when joining a room
+watch(() => roomStore.currentRoom?.id, async (roomId) => {
+  if (!roomId) {
+    hasLoadedHistory.value = false
+    return
+  }
+
+  if (!hasLoadedHistory.value && !chatStore.isLoading) {
+    hasLoadedHistory.value = true
+
+    try {
+      await chatStore.loadChatHistory()
+      // Scroll to bottom after loading history
+      await nextTick(() => {
+        scrollToBottom(false) // No smooth scroll for initial load
+      })
+    } catch (error) {
+      console.error('Failed to load chat history:', error)
+      hasLoadedHistory.value = false
+    }
+  }
+})
+
+// Clean up when leaving room
+watch(() => roomStore.isInRoom, (inRoom) => {
+  if (!inRoom) {
+    chatStore.clearMessages()
+    hasLoadedHistory.value = false
+  }
+})
+
+// Auto-expand chat on new messages (mobile behavior)
+watch(() => chatStore.messages.length, (newLength, oldLength) => {
+  if (newLength > oldLength && isCollapsed.value) {
+    // Flash the header to indicate new message
+    const header = document.querySelector('.chat-component .v-card-title')
+    if (header) {
+      header.classList.add('chat-new-message')
+      setTimeout(() => {
+        header.classList.remove('chat-new-message')
+      }, 2000)
+    }
+  }
+})
+
+// Initialize scroll position
+onMounted(() => {
+  nextTick(() => {
+    scrollToBottom(false)
+  })
+})
+</script>
+
 <template>
   <v-card
       v-if="roomStore.isInRoom"
@@ -95,118 +208,6 @@
     </v-alert>
   </v-card>
 </template>
-
-<script setup lang="ts">
-import { useChatStore } from '../stores/chat'
-import { useRoomStore } from '../stores/room'
-import ChatMessage from './ChatMessage.vue'
-import ChatInput from './ChatInput.vue'
-import TypingIndicator from './TypingIndicator.vue'
-
-// Stores
-const chatStore = useChatStore()
-const roomStore = useRoomStore()
-
-// Local state
-const isCollapsed = ref(false)
-const hasLoadedHistory = ref(false)
-const isNearBottom = ref(true)
-
-// Template refs
-const messagesContainer = ref<HTMLElement>()
-const messagesEnd = ref<HTMLElement>()
-
-// Methods
-const toggleCollapse = () => {
-  isCollapsed.value = !isCollapsed.value
-
-  // Auto-scroll when expanding
-  if (!isCollapsed.value) {
-    nextTick(() => {
-      scrollToBottom()
-    })
-  }
-}
-
-const scrollToBottom = (smooth = true) => {
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTo({
-      top: messagesContainer.value.scrollHeight,
-      behavior: smooth ? 'smooth' : 'auto'
-    })
-  }
-}
-
-const onScroll = () => {
-  if (!messagesContainer.value) return
-
-  const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
-  const threshold = 100 // pixels from bottom
-
-  isNearBottom.value = scrollHeight - scrollTop - clientHeight < threshold
-}
-
-// Auto-scroll to bottom when new messages arrive (only if user is near bottom)
-watch(() => chatStore.messages.length, () => {
-  if (isNearBottom.value && !isCollapsed.value) {
-    nextTick(() => {
-      scrollToBottom()
-    })
-  }
-})
-
-// Load chat history when joining a room
-watch(() => roomStore.currentRoom?.id, async (roomId) => {
-  if (!roomId) {
-    hasLoadedHistory.value = false
-    return
-  }
-
-  if (!hasLoadedHistory.value && !chatStore.isLoading) {
-    hasLoadedHistory.value = true
-
-    try {
-      await chatStore.loadChatHistory()
-      // Scroll to bottom after loading history
-      nextTick(() => {
-        scrollToBottom(false) // No smooth scroll for initial load
-      })
-    } catch (error) {
-      console.error('Failed to load chat history:', error)
-      hasLoadedHistory.value = false
-    }
-  }
-})
-
-// Clean up when leaving room
-watch(() => roomStore.isInRoom, (inRoom) => {
-  if (!inRoom) {
-    chatStore.clearMessages()
-    hasLoadedHistory.value = false
-  }
-})
-
-// Auto-expand chat on new messages (mobile behavior)
-watch(() => chatStore.messages.length, (newLength, oldLength) => {
-  if (newLength > oldLength && isCollapsed.value) {
-    // Flash the header to indicate new message
-    const header = document.querySelector('.chat-component .v-card-title')
-    if (header) {
-      header.classList.add('chat-new-message')
-      setTimeout(() => {
-        header.classList.remove('chat-new-message')
-      }, 2000)
-    }
-  }
-})
-
-// Initialize scroll position
-onMounted(() => {
-  nextTick(() => {
-    scrollToBottom(false)
-  })
-})
-</script>
 
 <style scoped>
 .chat-component {

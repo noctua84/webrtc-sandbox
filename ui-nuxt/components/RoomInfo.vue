@@ -1,3 +1,86 @@
+<script setup lang="ts">
+import { ref } from 'vue'
+import { useRoomStore } from '~/stores/room.store'
+
+// Stores
+const roomStore = useRoomStore()
+
+// Local state
+const copied = ref(false)
+const showCopySuccess = ref(false)
+const showCopyError = ref(false)
+const showLeaveDialog = ref(false)
+const isLeavingRoom = ref(false)
+
+// Methods
+const handleCopyRoomId = async () => {
+  try {
+    await navigator.clipboard.writeText(roomStore.currentRoom!.id)
+    copied.value = true
+    showCopySuccess.value = true
+
+    // Reset copied state after 2 seconds
+    setTimeout(() => {
+      copied.value = false
+    }, 2000)
+  } catch (error) {
+    console.error('Failed to copy room ID:', error)
+    showCopyError.value = true
+  }
+}
+
+const handleLeaveRoom = () => {
+  showLeaveDialog.value = true
+}
+
+const confirmLeaveRoom = async () => {
+  try {
+    isLeavingRoom.value = true
+    await roomStore.leaveRoom()
+    showLeaveDialog.value = false
+  } catch (error) {
+    console.error('Error leaving room:', error)
+    // Error is already handled in the store and shown in UI
+  } finally {
+    isLeavingRoom.value = false
+  }
+}
+
+const formatDate = (dateString: string): string => {
+  return new Date(dateString).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  })
+}
+
+const formatTimeAgo = (dateString: string): string => {
+  const now = new Date()
+  const date = new Date(dateString)
+  const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000)
+
+  if (diffInSeconds < 60) {
+    return 'just now'
+  } else if (diffInSeconds < 3600) {
+    const minutes = Math.floor(diffInSeconds / 60)
+    return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`
+  } else if (diffInSeconds < 86400) {
+    const hours = Math.floor(diffInSeconds / 3600)
+    return `${hours} hour${hours !== 1 ? 's' : ''} ago`
+  } else {
+    const days = Math.floor(diffInSeconds / 86400)
+    return `${days} day${days !== 1 ? 's' : ''} ago`
+  }
+}
+
+// Only show component if user is in a room
+if (!roomStore.isInRoom) {
+  // Component won't render
+}
+</script>
+
 <template>
   <v-card elevation="2">
     <v-card-title class="d-flex align-center justify-space-between">
@@ -40,11 +123,11 @@
                 </div>
                 <div class="d-flex align-center gap-2">
                   <v-text-field
-                      :model-value="roomStore.currentRoom.id"
+                      :model-value="roomStore?.currentRoom?.id"
                       readonly
                       density="compact"
                       variant="outlined"
-                      class="font-mono"
+                      class="font-mono mr-3"
                       style="max-width: 200px;"
                       hide-details
                   />
@@ -88,7 +171,7 @@
                 <div class="text-caption text-medium-emphasis">Participants</div>
                 <div class="text-subtitle-2 font-weight-medium">
                   <span class="text-success">{{ roomStore.connectedParticipantCount }}</span>
-                  <span class="text-medium-emphasis"> / {{ roomStore.currentRoom.maxParticipants }} connected</span>
+                  <span class="text-medium-emphasis"> / {{ roomStore?.currentRoom?.maxParticipants }} connected</span>
                   <div v-if="roomStore.participantCount !== roomStore.connectedParticipantCount" class="text-caption">
                     ({{ roomStore.participantCount }} total)
                   </div>
@@ -103,7 +186,7 @@
                 <v-icon color="info" class="mb-2">mdi-clock-outline</v-icon>
                 <div class="text-caption text-medium-emphasis">Created</div>
                 <div class="text-subtitle-2 font-weight-medium">
-                  {{ formatDate(roomStore.currentRoom.createdAt) }}
+                  {{ formatDate(roomStore?.currentRoom?.createdAt as string) }}
                 </div>
               </v-card-text>
             </v-card>
@@ -287,89 +370,6 @@
     </v-dialog>
   </v-card>
 </template>
-
-<script setup lang="ts">
-import { ref } from 'vue'
-import { useRoomStore } from '../stores/room'
-
-// Stores
-const roomStore = useRoomStore()
-
-// Local state
-const copied = ref(false)
-const showCopySuccess = ref(false)
-const showCopyError = ref(false)
-const showLeaveDialog = ref(false)
-const isLeavingRoom = ref(false)
-
-// Methods
-const handleCopyRoomId = async () => {
-  try {
-    await navigator.clipboard.writeText(roomStore.currentRoom!.id)
-    copied.value = true
-    showCopySuccess.value = true
-
-    // Reset copied state after 2 seconds
-    setTimeout(() => {
-      copied.value = false
-    }, 2000)
-  } catch (error) {
-    console.error('Failed to copy room ID:', error)
-    showCopyError.value = true
-  }
-}
-
-const handleLeaveRoom = () => {
-  showLeaveDialog.value = true
-}
-
-const confirmLeaveRoom = async () => {
-  try {
-    isLeavingRoom.value = true
-    await roomStore.leaveRoom()
-    showLeaveDialog.value = false
-  } catch (error) {
-    console.error('Error leaving room:', error)
-    // Error is already handled in the store and shown in UI
-  } finally {
-    isLeavingRoom.value = false
-  }
-}
-
-const formatDate = (dateString: string): string => {
-  return new Date(dateString).toLocaleString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
-}
-
-const formatTimeAgo = (dateString: string): string => {
-  const now = new Date()
-  const date = new Date(dateString)
-  const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000)
-
-  if (diffInSeconds < 60) {
-    return 'just now'
-  } else if (diffInSeconds < 3600) {
-    const minutes = Math.floor(diffInSeconds / 60)
-    return `${minutes} minute${minutes !== 1 ? 's' : ''} ago`
-  } else if (diffInSeconds < 86400) {
-    const hours = Math.floor(diffInSeconds / 3600)
-    return `${hours} hour${hours !== 1 ? 's' : ''} ago`
-  } else {
-    const days = Math.floor(diffInSeconds / 86400)
-    return `${days} day${days !== 1 ? 's' : ''} ago`
-  }
-}
-
-// Only show component if user is in a room
-if (!roomStore.isInRoom) {
-  // Component won't render
-}
-</script>
 
 <style scoped>
 .participant-card {

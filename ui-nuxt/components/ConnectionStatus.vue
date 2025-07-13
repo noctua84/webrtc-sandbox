@@ -1,19 +1,7 @@
-<template>
-  <v-chip
-      :color="statusColor"
-      :variant="statusVariant"
-      size="small"
-      :prepend-icon="statusIcon"
-  >
-    {{ statusText }}
-  </v-chip>
-</template>
-
 <script setup lang="ts">
-// Stores
-import {useSocket} from "~/composables/useSocket";
+import {useSocketIO} from "~/composables/useSocketIO";
 
-const socketStore = useSocket()
+const socketStore = useSocketIO()
 
 // Computed
 const statusColor = computed(() => {
@@ -35,3 +23,18 @@ const statusText = computed(() => {
   return 'Connected'
 })
 </script>
+
+<template>
+  <v-chip
+      :color="statusColor"
+      :variant="statusVariant"
+      size="small"
+      :prepend-icon="statusIcon"
+  >
+    {{ statusText }}
+  </v-chip>
+</template>
+
+<style scoped>
+
+</style>
