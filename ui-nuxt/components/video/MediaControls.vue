@@ -1,7 +1,23 @@
 <script setup lang="ts">
-import { useWebRTCStore } from '~/stores/webrtc.store'
-import { useRoomStore } from '~/stores/room.store'
+import { useWebRTCStore } from "~/stores/webrtc.store";
+import { useRoomStore } from "~/stores/room.store";
 import { ref, computed, onMounted } from 'vue'
+
+// Props
+interface Props {
+  compact?: boolean
+  showDialog?: boolean
+}
+
+const props = withDefaults(defineProps<Props>(), {
+  compact: false,
+  showDialog: false
+})
+
+// Emits
+const emit = defineEmits<{
+  close: []
+}>()
 
 // Stores
 const webrtcStore = useWebRTCStore()
@@ -9,68 +25,67 @@ const roomStore = useRoomStore()
 
 // Local state
 const showDeviceSettings = ref(false)
-const selectedQuality = ref('720p')
+const isStartingMedia = ref(false)
 
 // Computed
 const connectedCount = computed(() => {
-  return Array.from(webrtcStore.peerConnections.values())
-      .filter(peer => peer.connection.connectionState === 'connected').length
+  return webrtcStore.connectedParticipants.length
 })
 
 const otherParticipantsCount = computed(() => {
-  return roomStore.participants.filter(
-      p => p.socketId !== roomStore.currentParticipant?.socketId
+  return roomStore.participants.filter(p =>
+      p.socketId !== roomStore.currentParticipant?.socketId
   ).length
 })
 
 const connectionProgress = computed(() => {
   if (otherParticipantsCount.value === 0) return 100
-  return (connectedCount.value / otherParticipantsCount.value) * 100
+  return Math.round((connectedCount.value / otherParticipantsCount.value) * 100)
 })
-
-const peerConnectionsArray = computed(() => {
-  return Array.from(webrtcStore.peerConnections.values())
-})
-
-const videoDeviceItems = computed(() => {
-  return webrtcStore.availableDevices.videoDevices.map(device => ({
-    title: device.label || `Camera ${device.deviceId.slice(0, 8)}`,
-    value: device.deviceId
-  }))
-})
-
-const audioDeviceItems = computed(() => {
-  return webrtcStore.availableDevices.audioDevices.map(device => ({
-    title: device.label || `Microphone ${device.deviceId.slice(0, 8)}`,
-    value: device.deviceId
-  }))
-})
-
-const qualityOptions = [
-  { title: 'High (1080p)', value: '1080p' },
-  { title: 'Medium (720p)', value: '720p' },
-  { title: 'Low (480p)', value: '480p' }
-]
 
 // Methods
 const startMedia = async () => {
   try {
+    isStartingMedia.value = true
     await webrtcStore.startMedia()
   } catch (error) {
     console.error('Failed to start media:', error)
+  } finally {
+    isStartingMedia.value = false
   }
 }
 
-const stopMedia = () => {
-  webrtcStore.stopMedia()
+const stopMedia = async () => {
+  try {
+    await webrtcStore.stopMedia()
+  } catch (error) {
+    console.error('Failed to stop media:', error)
+  }
 }
 
-const toggleVideo = () => {
-  webrtcStore.toggleVideo()
+const toggleVideo = async () => {
+  try {
+    if (!webrtcStore.isMediaActive) {
+      await webrtcStore.startMedia(true, false)
+    } else {
+      await webrtcStore.toggleVideo()
+    }
+  } catch (error) {
+    console.error('Failed to toggle video:', error)
+  }
 }
 
-const toggleAudio = () => {
-  webrtcStore.toggleAudio()
+const toggleAudio = async () => {
+  try {
+    if (!webrtcStore.isMediaActive) {
+      // Start with audio only
+      await webrtcStore.startMedia(false, true)
+    } else {
+      await webrtcStore.toggleAudio()
+    }
+  } catch (error) {
+    console.error('Failed to toggle audio:', error)
+  }
 }
 
 const toggleScreenShare = async () => {
@@ -93,7 +108,7 @@ const refreshDevices = async () => {
   }
 }
 
-const onVideoDeviceChange = async (deviceId: string) => {
+const switchVideoDevice = async (deviceId: string) => {
   try {
     await webrtcStore.switchVideoDevice(deviceId)
   } catch (error) {
@@ -101,50 +116,12 @@ const onVideoDeviceChange = async (deviceId: string) => {
   }
 }
 
-const onAudioDeviceChange = async (deviceId: string) => {
+const switchAudioDevice = async (deviceId: string) => {
   try {
     await webrtcStore.switchAudioDevice(deviceId)
   } catch (error) {
     console.error('Failed to switch audio device:', error)
   }
-}
-
-// Helper functions
-const getConnectionColor = (state: RTCPeerConnectionState) => {
-  switch (state) {
-    case 'connected': return 'success'
-    case 'connecting': return 'warning'
-    case 'new': return 'info'
-    case 'disconnected':
-    case 'failed': return 'error'
-    default: return 'grey'
-  }
-}
-
-const getConnectionIcon = (state: RTCPeerConnectionState) => {
-  switch (state) {
-    case 'connected': return 'mdi-check'
-    case 'connecting': return 'mdi-loading'
-    case 'new': return 'mdi-circle-outline'
-    case 'disconnected':
-    case 'failed': return 'mdi-close'
-    default: return 'mdi-help'
-  }
-}
-
-const getConnectionText = (state: RTCPeerConnectionState) => {
-  switch (state) {
-    case 'connected': return 'Connected'
-    case 'connecting': return 'Connecting...'
-    case 'new': return 'Establishing...'
-    case 'disconnected': return 'Disconnected'
-    case 'failed': return 'Failed'
-    default: return 'Unknown'
-  }
-}
-
-const isConnecting = (state: RTCPeerConnectionState) => {
-  return ['connecting', 'new'].includes(state)
 }
 
 // Initialize devices on mount
@@ -154,7 +131,57 @@ onMounted(() => {
 </script>
 
 <template>
-  <v-card elevation="2" class="ma-2">
+  <!-- Compact Mode for Header Bar -->
+  <div v-if="compact" class="d-flex align-center gap-2">
+    <!-- Video Toggle (always available) -->
+    <v-btn
+        :color="webrtcStore.hasVideo ? 'success' : 'error'"
+        :variant="webrtcStore.hasVideo ? 'outlined' : 'flat'"
+        size="small"
+        @click="toggleVideo"
+    >
+      <v-icon size="16">{{ webrtcStore.hasVideo ? 'mdi-video' : 'mdi-video-off' }}</v-icon>
+      <v-tooltip activator="parent" location="bottom">
+        {{ webrtcStore.hasVideo ? 'Turn Off Video' : 'Turn On Video' }}
+      </v-tooltip>
+    </v-btn>
+
+    <!-- Audio Toggle (always available) -->
+    <v-btn
+        :color="webrtcStore.hasAudio ? 'success' : 'error'"
+        :variant="webrtcStore.hasAudio ? 'outlined' : 'flat'"
+        size="small"
+        @click="toggleAudio"
+    >
+      <v-icon size="16">{{ webrtcStore.hasAudio ? 'mdi-microphone' : 'mdi-microphone-off' }}</v-icon>
+      <v-tooltip activator="parent" location="bottom">
+        {{ webrtcStore.hasAudio ? 'Mute' : 'Unmute' }}
+      </v-tooltip>
+    </v-btn>
+
+    <!-- Screen Share (always available) -->
+    <v-btn
+        :color="webrtcStore.isScreenSharing ? 'info' : 'default'"
+        :variant="webrtcStore.isScreenSharing ? 'flat' : 'outlined'"
+        size="small"
+        :loading="webrtcStore.isConnecting"
+        @click="toggleScreenShare"
+    >
+      <v-icon size="16">mdi-monitor-share</v-icon>
+      <v-tooltip activator="parent" location="bottom">
+        {{ webrtcStore.isScreenSharing ? 'Stop Share' : 'Share Screen' }}
+      </v-tooltip>
+    </v-btn>
+
+    <!-- Connection Status Indicator -->
+    <div v-if="connectedCount > 0" class="d-flex align-center gap-1 px-2">
+      <v-icon size="16" color="success">mdi-connection</v-icon>
+      <span class="text-caption text-success">{{ connectedCount }}</span>
+    </div>
+  </div>
+
+  <!-- Full Mode (Original) -->
+  <v-card v-else elevation="2" class="ma-2">
     <v-card-title class="d-flex align-center">
       <v-icon start>mdi-microphone-settings</v-icon>
       Media Controls
@@ -249,7 +276,7 @@ onMounted(() => {
                 color="primary"
                 variant="outlined"
                 size="small"
-                @click="webrtcStore.connectToAllParticipants"
+                @click="webrtcStore.connectToAllParticipants()"
             >
               <v-icon start size="16">mdi-refresh</v-icon>
               Reconnect All
@@ -260,89 +287,20 @@ onMounted(() => {
           <div class="d-flex align-center gap-2">
             <v-progress-linear
                 :model-value="connectionProgress"
-                :color="connectionProgress === 100 ? 'success' : 'warning'"
+                :color="connectionProgress === 100 ? 'success' : 'primary'"
                 height="6"
                 rounded
-                class="flex-grow-1"
             />
-            <div class="text-caption text-medium-emphasis">
-              {{ connectedCount }}/{{ otherParticipantsCount }}
-            </div>
-          </div>
-        </v-col>
-      </v-row>
-
-      <!-- Individual Connections -->
-      <v-row v-if="webrtcStore.isMediaActive && peerConnectionsArray.length > 0">
-        <v-col cols="12">
-          <div class="text-subtitle-2 text-medium-emphasis mb-2">
-            <v-icon size="16" class="mr-1">mdi-account-group</v-icon>
-            Participant Connections
-          </div>
-
-          <div class="d-flex flex-column gap-2">
-            <v-card
-                v-for="peer in peerConnectionsArray"
-                :key="peer.participantId"
-                variant="outlined"
-                class="pa-2"
-            >
-              <div class="d-flex align-center justify-space-between">
-                <div class="d-flex align-center gap-2">
-                  <v-avatar size="24" :color="getConnectionColor(peer.connection.connectionState)">
-                    <v-icon size="16" color="white">
-                      {{ getConnectionIcon(peer.connection.connectionState) }}
-                    </v-icon>
-                  </v-avatar>
-                  <div>
-                    <div class="text-body-2 font-weight-medium">{{ peer.userName }}</div>
-                    <div class="text-caption text-medium-emphasis">
-                      {{ getConnectionText(peer.connection.connectionState) }}
-                    </div>
-                  </div>
-                </div>
-
-                <!-- Connection Quality -->
-                <div v-if="peer.connection.connectionState === 'connected'" class="d-flex gap-1">
-                  <div class="connection-bar bg-success"></div>
-                  <div class="connection-bar bg-success"></div>
-                  <div class="connection-bar bg-success"></div>
-                </div>
-
-                <!-- Loading indicator -->
-                <v-progress-circular
-                    v-else-if="isConnecting(peer.connection.connectionState)"
-                    size="20"
-                    width="2"
-                    indeterminate
-                    color="primary"
-                />
-              </div>
-            </v-card>
-          </div>
-        </v-col>
-      </v-row>
-
-      <!-- Quick Actions -->
-      <v-row v-if="webrtcStore.isMediaActive && otherParticipantsCount > 0" class="mt-2">
-        <v-col cols="12">
-          <v-divider class="mb-3" />
-          <div class="d-flex gap-2">
-            <v-btn
-                variant="outlined"
-                size="small"
-                @click="webrtcStore.connectToAllParticipants"
-            >
-              <v-icon start size="16">mdi-refresh</v-icon>
-              Reconnect All
-            </v-btn>
+            <span class="text-caption text-medium-emphasis min-width-fit">
+              {{ connectionProgress }}%
+            </span>
           </div>
         </v-col>
       </v-row>
     </v-card-text>
 
-    <!-- Device Settings Dialog -->
-    <v-dialog v-model="showDeviceSettings" max-width="500">
+    <!-- Device Settings Dialog (when used as standalone dialog) -->
+    <v-dialog v-if="showDialog" :model-value="showDialog" max-width="500" @update:model-value="emit('close')">
       <v-card>
         <v-card-title class="d-flex align-center">
           <v-icon start>mdi-cog</v-icon>
@@ -350,36 +308,32 @@ onMounted(() => {
         </v-card-title>
 
         <v-card-text>
-          <!-- Video Device -->
+          <!-- Audio Devices -->
           <v-select
-              v-model="webrtcStore.selectedVideoDevice"
-              :items="videoDeviceItems"
-              label="Camera"
-              prepend-icon="mdi-video"
-              variant="outlined"
-              class="mb-4"
-              @update:model-value="onVideoDeviceChange"
-          />
-
-          <!-- Audio Device -->
-          <v-select
-              v-model="webrtcStore.selectedAudioDevice"
-              :items="audioDeviceItems"
+              v-if="webrtcStore.availableDevices.audioDevices.length > 0"
+              :items="webrtcStore.availableDevices.audioDevices"
+              item-title="label"
+              item-value="deviceId"
+              :model-value="webrtcStore.selectedAudioDevice"
               label="Microphone"
-              prepend-icon="mdi-microphone"
               variant="outlined"
-              class="mb-4"
-              @update:model-value="onAudioDeviceChange"
+              density="compact"
+              class="mb-3"
+              @update:model-value="switchAudioDevice"
           />
 
-          <!-- Quality Settings -->
+          <!-- Video Devices -->
           <v-select
-              v-model="selectedQuality"
-              :items="qualityOptions"
-              label="Video Quality"
-              prepend-icon="mdi-quality-high"
+              v-if="webrtcStore.availableDevices.videoDevices.length > 0"
+              :items="webrtcStore.availableDevices.videoDevices"
+              item-title="label"
+              item-value="deviceId"
+              :model-value="webrtcStore.selectedVideoDevice"
+              label="Camera"
               variant="outlined"
-              class="mb-4"
+              density="compact"
+              class="mb-3"
+              @update:model-value="switchVideoDevice"
           />
 
           <!-- Refresh Devices -->
@@ -387,6 +341,7 @@ onMounted(() => {
               variant="outlined"
               block
               @click="refreshDevices"
+              class="mb-3"
           >
             <v-icon start>mdi-refresh</v-icon>
             Refresh Devices
@@ -395,9 +350,7 @@ onMounted(() => {
 
         <v-card-actions>
           <v-spacer />
-          <v-btn @click="showDeviceSettings = false">
-            Close
-          </v-btn>
+          <v-btn @click="emit('close')">Close</v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
@@ -405,13 +358,7 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.gap-2 {
-  gap: 8px;
-}
-
-.connection-bar {
-  width: 3px;
-  height: 12px;
-  border-radius: 2px;
+.min-width-fit {
+  min-width: fit-content;
 }
 </style>

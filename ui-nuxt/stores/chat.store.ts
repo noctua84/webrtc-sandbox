@@ -10,6 +10,8 @@ import type {
     EditMessageRequest,
     DeleteMessageRequest,
     TypingIndicatorRequest,
+    AddReactionRequest,
+    RemoveReactionRequest,
     ChatError
 } from '~/types/chat.types'
 
@@ -241,6 +243,68 @@ export const useChatStore = defineStore('chat', () => {
         }
     }
 
+    const addReaction = async (messageId: string, emoji: string): Promise<void> => {
+        if (!roomStore.currentRoom) {
+            const error = 'Must be in a room to add reactions'
+            setChatError(error, 'NO_ROOM_ERROR')
+            throw new Error(error)
+        }
+
+        debugLog('Adding reaction', { messageId, emoji })
+
+        try {
+            const request: AddReactionRequest = {
+                messageId,
+                roomId: roomStore.currentRoom.id,
+                emoji
+            }
+
+            const response = await socketStore.emit('add-reaction', request)
+
+            if (response.success) {
+                debugLog('Reaction added successfully', { messageId, emoji })
+                // Reaction will be updated via socket event
+            } else {
+                throw new Error(response.error || 'Failed to add reaction')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setChatError(`Failed to add reaction: ${errorMessage}`, 'ADD_REACTION_FAILED')
+            throw error
+        }
+    }
+
+    const removeReaction = async (messageId: string, emoji: string): Promise<void> => {
+        if (!roomStore.currentRoom) {
+            const error = 'Must be in a room to remove reactions'
+            setChatError(error, 'NO_ROOM_ERROR')
+            throw new Error(error)
+        }
+
+        debugLog('Removing reaction', { messageId, emoji })
+
+        try {
+            const request: RemoveReactionRequest = {
+                messageId,
+                roomId: roomStore.currentRoom.id,
+                emoji
+            }
+
+            const response = await socketStore.emit('remove-reaction', request)
+
+            if (response.success) {
+                debugLog('Reaction removed successfully', { messageId, emoji })
+                // Reaction will be updated via socket event
+            } else {
+                throw new Error(response.error || 'Failed to remove reaction')
+            }
+        } catch (error) {
+            const errorMessage = (error as Error).message
+            setChatError(`Failed to remove reaction: ${errorMessage}`, 'REMOVE_REACTION_FAILED')
+            throw error
+        }
+    }
+
     const sendTypingIndicator = async (isTyping: boolean): Promise<void> => {
         if (!roomStore.currentRoom || !roomStore.currentParticipant) return
 
@@ -291,6 +355,21 @@ export const useChatStore = defineStore('chat', () => {
         debugLog('Chat messages cleared')
     }
 
+    // Helper methods for components
+    const canEditMessage = (message: ChatMessage): boolean => {
+        return message.senderId === roomStore.currentParticipant?.socketId
+    }
+
+    const canDeleteMessage = (message: ChatMessage): boolean => {
+        return message.senderId === roomStore.currentParticipant?.socketId ||
+            roomStore.isRoomCreator
+    }
+
+    const isMentioned = (message: ChatMessage): boolean => {
+        const currentUserId = roomStore.currentParticipant?.socketId
+        return !!(currentUserId && message.mentions?.includes(currentUserId))
+    }
+
     // Computed properties
     const messageCount = computed(() => messages.value.length)
 
@@ -317,8 +396,8 @@ export const useChatStore = defineStore('chat', () => {
     const hasError = computed(() => !!chatError.value)
 
     return {
-        // State (readonly)
-        messages: readonly(messages),
+        // State - messages is NOT readonly to allow component interactions
+        messages, // Mutable for component interactions
         chatError: readonly(chatError),
         isTyping: readonly(isTyping),
         isSendingMessage: readonly(isSendingMessage),
@@ -335,10 +414,17 @@ export const useChatStore = defineStore('chat', () => {
         sendMessage,
         editMessage,
         deleteMessage,
+        addReaction,
+        removeReaction,
         sendTypingIndicator,
         loadChatHistory,
         clearMessages,
         clearChatError,
+
+        // Helper methods for components
+        canEditMessage,
+        canDeleteMessage,
+        isMentioned,
 
         // Initialization
         initializeChat,
