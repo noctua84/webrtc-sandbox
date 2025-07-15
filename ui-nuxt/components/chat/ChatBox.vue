@@ -1,9 +1,10 @@
+<!-- ui-nuxt/components/chat/ChatComponent.vue -->
 <script setup lang="ts">
-import { useChatStore } from "~/stores/chat.store";
-import { useRoomStore } from "~/stores/room.store";
-import ChatMessage from "~/components/chat/ChatMessage.vue";
-import ChatInput from "~/components/chat/ChatInput.vue";
-import TypingIndicator from "~/components/chat/TypingIndicator.vue";
+import { useChatStore } from '~/stores/chat.store'
+import { useRoomStore } from '~/stores/room.store'
+import ChatMessage from '~/components/chat/ChatMessage.vue'
+import ChatInput from '~/components/chat/ChatInput.vue'
+import TypingIndicator from '~/components/chat/TypingIndicator.vue'
 import { ref, computed, nextTick, watch, onMounted } from 'vue'
 
 // Stores
@@ -11,13 +12,14 @@ const chatStore = useChatStore()
 const roomStore = useRoomStore()
 
 // Local state
+const isCollapsed = ref(false)
+const hasLoadedHistory = ref(false)
 const messagesContainer = ref<HTMLElement | null>(null)
 const messagesEnd = ref<HTMLElement | null>(null)
-const isNearBottom = ref(true)
-const hasLoadedHistory = ref(false)
 
 // Computed
-const hasMessages = computed(() => chatStore.messageCount > 0)
+const hasMessages = computed(() => chatStore.hasMessages)
+const shouldShowChat = computed(() => roomStore.isInRoom)
 
 // Methods
 const scrollToBottom = (smooth = true) => {
@@ -28,43 +30,44 @@ const scrollToBottom = (smooth = true) => {
   }
 }
 
-const onScroll = () => {
-  if (!messagesContainer.value) return
-
-  const { scrollTop, scrollHeight, clientHeight } = messagesContainer.value
-  const threshold = 100 // pixels from bottom
-
-  isNearBottom.value = scrollHeight - scrollTop - clientHeight < threshold
+const toggleCollapse = () => {
+  isCollapsed.value = !isCollapsed.value
 }
 
-// Auto-scroll to bottom when new messages arrive (only if user is near bottom)
+// Auto-scroll to bottom when new messages arrive
 watch(() => chatStore.messages.length, () => {
-  if (isNearBottom.value) {
-    nextTick(() => {
-      scrollToBottom()
-    })
-  }
+  nextTick(() => {
+    scrollToBottom()
+  })
 })
 
-// Load chat history when joining a room
+// Load chat history when joining a room - SSR-safe
 watch(() => roomStore.currentRoom?.id, async (roomId) => {
-  if (!roomId) {
+  if (!process.client) return
+
+  // Reset history loaded flag when room changes
+  if (!roomStore.isInRoom || !roomId) {
     hasLoadedHistory.value = false
     return
   }
 
-  if (!hasLoadedHistory.value && !chatStore.isSendingMessage) {
-    hasLoadedHistory.value = true
+  // Only load if we haven't loaded for this room yet
+  if (!hasLoadedHistory.value && !chatStore.isLoading) {
+    console.log('🔄 Loading chat history for room:', roomId)
+    hasLoadedHistory.value = true // Set immediately to prevent loops
 
     try {
+      // Initialize chat if needed
+      await chatStore.initializeChat()
       await chatStore.loadChatHistory()
+
       // Scroll to bottom after loading history
       await nextTick(() => {
         scrollToBottom(false) // No smooth scroll for initial load
       })
     } catch (error) {
       console.error('Failed to load chat history:', error)
-      hasLoadedHistory.value = false
+      hasLoadedHistory.value = false // Reset on error so user can retry
     }
   }
 })
@@ -72,214 +75,137 @@ watch(() => roomStore.currentRoom?.id, async (roomId) => {
 // Clean up when leaving room
 watch(() => roomStore.isInRoom, (inRoom) => {
   if (!inRoom) {
+    console.log('🧹 Cleaning up chat messages')
     chatStore.clearMessages()
-    hasLoadedHistory.value = false
+    hasLoadedHistory.value = false // Reset for next room
   }
 })
 
-// Initialize scroll position
+// Initialize chat on mount (client-side only)
 onMounted(() => {
-  nextTick(() => {
-    scrollToBottom(false)
-  })
+  if (process.client && roomStore.isInRoom) {
+    chatStore.initializeChat()
+  }
 })
+
+// Debug info - useful for development
+const debugInfo = computed(() => ({
+  isLoading: chatStore.isLoading,
+  messageCount: chatStore.messageCount,
+  hasMessages: chatStore.hasMessages,
+  error: chatStore.error,
+  hasLoadedHistory: hasLoadedHistory.value,
+  roomId: roomStore.currentRoom?.id,
+  isInitialized: chatStore.isInitialized
+}))
 </script>
 
 <template>
+  <!-- Only render if in a room -->
   <v-card
-      v-if="roomStore.isInRoom"
-      class="fill-height d-flex flex-column"
+      v-if="shouldShowChat"
+      :class="[
+        'flex flex-col transition-all duration-300',
+        isCollapsed ? 'h-12' : 'h-96'
+      ]"
       elevation="2"
   >
     <!-- Header -->
-    <v-card-title class="d-flex align-center justify-space-between pa-4 pb-2">
+    <v-card-title class="d-flex align-center justify-space-between pa-3 bg-grey-lighten-5">
       <div class="d-flex align-center gap-2">
         <v-icon color="primary">mdi-chat</v-icon>
-        <span>Chat</span>
-        <v-chip
-            v-if="chatStore.messages.length > 0"
-            size="small"
+        <span class="text-h6">Chat</span>
+        <v-badge
+            v-if="chatStore.messageCount > 0"
+            :content="chatStore.messageCount"
             color="primary"
-            variant="outlined"
-        >
-          {{ chatStore.messages.length }}
-        </v-chip>
+            inline
+        />
       </div>
 
-      <!-- Chat Actions -->
-      <div class="d-flex align-center gap-1">
-        <!-- Clear Chat (for room creators) -->
-        <v-btn
-            v-if="roomStore.isRoomCreator && hasMessages"
-            icon
-            size="small"
-            variant="text"
-            @click="chatStore.clearMessages()"
-        >
-          <v-icon size="16">mdi-delete-sweep</v-icon>
-          <v-tooltip activator="parent" location="bottom">Clear Chat</v-tooltip>
-        </v-btn>
-
-        <!-- Chat Settings -->
-        <v-btn
-            icon
-            size="small"
-            variant="text"
-        >
-          <v-icon size="16">mdi-cog</v-icon>
-          <v-tooltip activator="parent" location="bottom">Chat Settings</v-tooltip>
-        </v-btn>
-      </div>
+      <v-btn
+          :icon="isCollapsed ? 'mdi-chevron-up' : 'mdi-chevron-down'"
+          size="small"
+          variant="text"
+          @click="toggleCollapse"
+      />
     </v-card-title>
 
-    <v-divider />
-
-    <!-- Messages Container -->
-    <div class="flex-grow-1 d-flex flex-column min-height-0">
-      <div
-          ref="messagesContainer"
-          class="messages-container flex-grow-1 pa-3 overflow-y-auto"
-          @scroll="onScroll"
+    <!-- Chat content -->
+    <template v-if="!isCollapsed">
+      <!-- Error state -->
+      <v-alert
+          v-if="chatStore.error"
+          type="error"
+          variant="tonal"
+          closable
+          class="ma-3"
+          @click:close="chatStore.clearError"
       >
-        <!-- Loading State -->
-        <div v-if="chatStore.isSendingMessage" class="d-flex justify-center pa-4">
-          <v-progress-circular
-              indeterminate
-              size="24"
-              color="primary"
-          />
-          <span class="ml-2 text-caption">Loading messages...</span>
+        {{ chatStore.error }}
+      </v-alert>
+
+      <!-- Loading state -->
+      <div v-if="chatStore.isLoading" class="d-flex justify-center align-center pa-4">
+        <v-progress-circular indeterminate color="primary" />
+        <span class="ml-2">Loading chat history...</span>
+      </div>
+
+      <!-- Messages area -->
+      <v-card-text
+          v-else
+          ref="messagesContainer"
+          class="flex-1 overflow-y-auto pa-3"
+          style="max-height: 280px; min-height: 200px;"
+      >
+        <!-- No messages state -->
+        <div v-if="!hasMessages" class="d-flex flex-column align-center justify-center h-100 text-grey">
+          <v-icon size="48" class="mb-3">mdi-chat-outline</v-icon>
+          <p class="text-body-2 mb-1">No messages yet</p>
+          <p class="text-caption">Be the first to say hello!</p>
         </div>
 
-        <!-- Empty State -->
-        <div v-else-if="!hasMessages" class="text-center pa-6">
-          <v-icon size="64" color="grey-lighten-2" class="mb-3">mdi-chat-outline</v-icon>
-          <div class="text-body-2 text-medium-emphasis mb-2">
-            No messages yet
-          </div>
-          <div class="text-caption text-medium-emphasis">
-            Start the conversation below!
-          </div>
-        </div>
-
-        <!-- Messages -->
-        <div v-else class="d-flex flex-column gap-2">
+        <!-- Messages list -->
+        <template v-else>
           <ChatMessage
               v-for="message in chatStore.messages"
               :key="message.id"
               :message="message"
           />
-        </div>
+          <TypingIndicator />
+          <div ref="messagesEnd" />
+        </template>
+      </v-card-text>
 
-        <!-- Typing Indicators -->
-        <TypingIndicator v-if="chatStore.typingUsers.length > 0" />
-
-        <!-- Scroll anchor -->
-        <div ref="messagesEnd" />
+      <!-- Input area -->
+      <div class="border-t">
+        <ChatInput />
       </div>
-
-      <!-- Scroll to Bottom Button -->
-      <v-fab
-          v-if="!isNearBottom && hasMessages"
-          icon="mdi-chevron-down"
-          size="small"
-          location="bottom end"
-          class="scroll-to-bottom-fab"
-          color="primary"
-          @click="scrollToBottom()"
-      />
-    </div>
-
-    <!-- Chat Input -->
-    <div class="chat-input-container">
-      <v-divider />
-      <ChatInput />
-    </div>
-
-    <!-- Error State -->
-    <v-slide-y-transition>
-      <v-alert
-          v-if="chatStore.hasError"
-          type="error"
-          variant="tonal"
-          density="compact"
-          closable
-          class="ma-2"
-          @click:close="chatStore.clearChatError()"
-      >
-        {{ chatStore.chatError?.message }}
-      </v-alert>
-    </v-slide-y-transition>
+    </template>
   </v-card>
 </template>
 
 <style scoped>
-.min-height-0 {
-  min-height: 0;
+/* Custom scrollbar for messages area */
+:deep(.v-card-text) {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.2) transparent;
 }
 
-.messages-container {
-  scroll-behavior: smooth;
-}
-
-.chat-input-container {
-  flex-shrink: 0;
-}
-
-.scroll-to-bottom-fab {
-  position: absolute !important;
-  bottom: 80px;
-  right: 16px;
-  z-index: 10;
-}
-
-/* Custom scrollbar styling */
-.messages-container::-webkit-scrollbar {
+:deep(.v-card-text::-webkit-scrollbar) {
   width: 6px;
 }
 
-.messages-container::-webkit-scrollbar-track {
-  background: rgba(var(--v-theme-on-surface), 0.05);
+:deep(.v-card-text::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+:deep(.v-card-text::-webkit-scrollbar-thumb) {
+  background-color: rgba(0, 0, 0, 0.2);
   border-radius: 3px;
 }
 
-.messages-container::-webkit-scrollbar-thumb {
-  background: rgba(var(--v-theme-on-surface), 0.2);
-  border-radius: 3px;
-}
-
-.messages-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(var(--v-theme-on-surface), 0.3);
-}
-
-/* New message flash animation */
-:global(.chat-new-message) {
-  animation: flash 0.5s ease-in-out 2;
-}
-
-@keyframes flash {
-  0%, 100% {
-    background-color: transparent;
-  }
-  50% {
-    background-color: rgba(var(--v-theme-primary), 0.1);
-  }
-}
-
-/* Ensure proper spacing and alignment */
-.v-card-title {
-  flex-shrink: 0;
-}
-
-/* Mobile responsive adjustments */
-@media (max-width: 768px) {
-  .messages-container {
-    padding: 12px;
-  }
-
-  .scroll-to-bottom-fab {
-    bottom: 70px;
-    right: 12px;
-  }
+:deep(.v-card-text::-webkit-scrollbar-thumb:hover) {
+  background-color: rgba(0, 0, 0, 0.3);
 }
 </style>

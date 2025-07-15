@@ -20,7 +20,9 @@ export interface Participant {
         hasVideo: boolean
         hasAudio: boolean
         isScreenSharing: boolean
-    }
+    },
+    isOnline?: boolean
+    avatar?: string
 }
 
 export type RoomStatus = 'none' | 'creating' | 'joining' | 'connected' | 'error' | 'reconnecting'

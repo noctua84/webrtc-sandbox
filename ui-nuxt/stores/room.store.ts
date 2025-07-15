@@ -399,7 +399,7 @@ export const useRoomStore = defineStore('room', () => {
         // State (readonly)
         currentRoom: readonly(currentRoom),
         currentParticipant: readonly(currentParticipant),
-        participants: readonly(participants),
+        participants,
         roomStatus: readonly(roomStatus),
         roomError: readonly(roomError),
 

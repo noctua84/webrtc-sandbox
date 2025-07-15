@@ -1,6 +1,6 @@
 import {io, type Socket} from "socket.io-client";
 import type {LogData, LogEntry, LogLevel} from "~/types/logging.types";
-import type {SocketConnectionStatus, UseSocketOptions} from "~/types/socket.types";
+import type {SocketConnectionStatus, SocketResponse, UseSocketOptions} from "~/types/socket.types";
 
 const globalSocketState = {
     socket: null as Socket | null,
@@ -23,7 +23,7 @@ const createLogEntry = (level: LogLevel, message: string, data?: LogData): LogEn
 export const useSocketIO = (options: UseSocketOptions = {}) => {
     const config = useRuntimeConfig()
     const url = options.url || config?.public?.socketServerUrl as string || 'http://localhost:3001'
-    const autoConnect = options.autoConnect || config?.public?.socketAutoConnect === 'true'
+    const autoConnect = options.autoConnect || config?.public?.socketAutoConnect
 
     // Simple logging
     const addLog = (level: LogLevel, message: string, data?: LogData) => {
@@ -104,7 +104,7 @@ export const useSocketIO = (options: UseSocketOptions = {}) => {
     // Core connection method
     const connect = (): Promise<void> => {
         return new Promise((resolve, reject) => {
-            if (process.server) {
+            if (import.meta.server) {
                 reject(new Error('Cannot connect on server side'))
                 return
             }
@@ -209,7 +209,7 @@ export const useSocketIO = (options: UseSocketOptions = {}) => {
     }
 
     // Core emit method - just communication
-    const emit = <T = any>(event: string, data?: any, timeoutMs: number = 15000): Promise<T> => {
+    const emit = <T = any>(event: string, data?: any, timeoutMs: number = 15000): Promise<SocketResponse<T>> => {
         return new Promise(async (resolve, reject) => {
             try {
                 if (!globalSocketState.initialized || !globalSocketState.socket) {

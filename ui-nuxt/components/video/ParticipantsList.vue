@@ -55,7 +55,7 @@ const getParticipantColor = (participant: any) => {
   <v-card class="fill-height d-flex flex-column" elevation="2">
     <v-card-title class="d-flex align-center justify-space-between pa-4 pb-2">
       <div class="d-flex align-center gap-2">
-        <v-icon color="primary">mdi-account-group</v-icon>
+        <v-icon color="primary" class="mr-2">mdi-account-group</v-icon>
         <span>Participants</span>
       </div>
       <v-chip
@@ -92,6 +92,7 @@ const getParticipantColor = (participant: any) => {
                 <v-avatar
                     :color="getParticipantColor(participant)"
                     size="32"
+                    class="mr-3"
                 >
                   <span class="text-white text-caption font-weight-medium">
                     {{ participant.userName.charAt(0).toUpperCase() }}
@@ -101,7 +102,7 @@ const getParticipantColor = (participant: any) => {
                 <!-- Participant Info -->
                 <div class="flex-grow-1 min-width-0">
                   <div class="d-flex align-center gap-1 mb-1">
-                    <span class="text-subtitle-2 font-weight-medium text-truncate">
+                    <span class="text-subtitle-2 font-weight-medium text-truncate mr-2">
                       {{ participant.userName }}
                     </span>
 
@@ -111,6 +112,7 @@ const getParticipantColor = (participant: any) => {
                         size="x-small"
                         color="primary"
                         variant="outlined"
+                        class="mr-2"
                     >
                       You
                     </v-chip>
@@ -132,25 +134,6 @@ const getParticipantColor = (participant: any) => {
                     <v-icon size="12" color="success">mdi-circle</v-icon>
                     <span class="text-success">Active now</span>
                   </div>
-                </div>
-
-                <!-- Media Status Icons -->
-                <div class="d-flex flex-column gap-1">
-                  <!-- Video Status -->
-                  <v-icon
-                      size="16"
-                      :color="participant.mediaStatus?.hasVideo ? 'success' : 'error'"
-                  >
-                    {{ participant.mediaStatus?.hasVideo ? 'mdi-video' : 'mdi-video-off' }}
-                  </v-icon>
-
-                  <!-- Audio Status -->
-                  <v-icon
-                      size="16"
-                      :color="participant.mediaStatus?.hasAudio ? 'success' : 'error'"
-                  >
-                    {{ participant.mediaStatus?.hasAudio ? 'mdi-microphone' : 'mdi-microphone-off' }}
-                  </v-icon>
                 </div>
               </div>
             </v-card-text>
@@ -239,21 +222,6 @@ const getParticipantColor = (participant: any) => {
           No participants yet
         </div>
       </div>
-    </div>
-
-    <!-- Quick Actions -->
-    <v-divider />
-    <div class="pa-3">
-      <v-btn
-          v-if="roomStore.isRoomCreator"
-          variant="outlined"
-          size="small"
-          block
-          color="primary"
-      >
-        <v-icon start size="16">mdi-share-variant</v-icon>
-        Invite People
-      </v-btn>
     </div>
   </v-card>
 </template>

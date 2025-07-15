@@ -101,11 +101,11 @@ const shouldRender = computed(() => roomStore.isInRoom)
               </code>
               <v-btn
                   :color="copied ? 'success' : 'primary'"
-                  :icon="copied ? 'mdi-check' : 'mdi-content-copy'"
                   size="x-small"
                   variant="text"
                   @click="handleCopyRoomId"
               >
+                <v-icon>{{ copied ? 'mdi-check' : 'mdi-content-copy'}}</v-icon>
                 <v-tooltip activator="parent" location="top">
                   {{ copied ? 'Copied!' : 'Copy Room ID' }}
                 </v-tooltip>
@@ -115,7 +115,7 @@ const shouldRender = computed(() => roomStore.isInRoom)
             <!-- Room Status -->
             <div class="d-flex align-center gap-2">
               <v-icon size="16" color="success">mdi-circle</v-icon>
-              <span class="text-caption">
+              <span class="text-caption mr-2">
                 {{ roomStore.connectedParticipantCount }}/{{ roomStore?.currentRoom?.maxParticipants }} participants
               </span>
             </div>
@@ -339,7 +339,7 @@ const shouldRender = computed(() => roomStore.isInRoom)
 }
 
 .border-t {
-  border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-top: 1px solid rgba(var(--v-theme-on-surface-rgb), 0.12);
 }
 
 .font-mono {

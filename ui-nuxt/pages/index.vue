@@ -1,5 +1,7 @@
+<!-- ui-nuxt/pages/index.vue - Updated with new chat implementation -->
 <script setup lang="ts">
 import { useRoomStore } from "~/stores/room.store"
+import { useChatStore } from "~/stores/chat.store"
 import RoomInfo from "~/components/RoomInfo.vue"
 import ParticipantsList from "~/components/video/ParticipantsList.vue"
 import RoomForm from "~/components/RoomForm.vue"
@@ -12,11 +14,13 @@ import VideoSettings from "~/components/video/VideoSettings.vue"
 import { ref, computed } from 'vue'
 
 definePageMeta({
-  title: 'WebRTC Video Streaming'
+  title: 'WebRTC Video Streaming',
+  ssr: true
 })
 
 // Stores
 const roomStore = useRoomStore()
+const chatStore = useChatStore()
 
 // Local state
 const showDeviceSettings = ref(false)
@@ -32,6 +36,13 @@ const loadingMessage = computed(() => {
   if (roomStore.isCreatingRoom) return 'Creating room...'
   if (roomStore.isJoiningRoom) return 'Joining room...'
   return 'Loading...'
+})
+
+// Initialize chat when component mounts (client-side only)
+onMounted(() => {
+  if (process.client && roomStore.isInRoom) {
+    chatStore.initializeChat()
+  }
 })
 </script>
 
@@ -121,7 +132,7 @@ const loadingMessage = computed(() => {
                   <VideoGrid class="fill-height" />
                 </div>
 
-                <!-- Chat Box - Fixed width -->
+                <!-- Chat Component - Fixed width -->
                 <div class="chat-sidebar">
                   <ChatBox class="fill-height" />
                 </div>
@@ -187,12 +198,18 @@ const loadingMessage = computed(() => {
 }
 
 .chat-sidebar {
-  width: 350px;
+  width: 400px; /* Slightly wider for better chat experience */
 }
 
 /* Ensure video grid takes remaining space */
 .flex-grow-1 {
   flex-grow: 1;
   min-width: 0; /* Important for flex items with text overflow */
+}
+
+/* Chat specific styling */
+.chat-sidebar .fill-height {
+  display: flex;
+  flex-direction: column;
 }
 </style>

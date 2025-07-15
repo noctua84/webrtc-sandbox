@@ -21,6 +21,7 @@
         :variant="webrtcStore.hasVideo ? 'outlined' : 'flat'"
         size="small"
         @click="handleToggleVideo"
+        class="mr-1"
     >
       <v-icon size="16">{{ webrtcStore.hasVideo ? 'mdi-video' : 'mdi-video-off' }}</v-icon>
       <v-tooltip activator="parent" location="bottom">
@@ -35,6 +36,7 @@
         :variant="webrtcStore.hasAudio ? 'outlined' : 'flat'"
         size="small"
         @click="handleToggleAudio"
+        class="mr-1"
     >
       <v-icon size="16">{{ webrtcStore.hasAudio ? 'mdi-microphone' : 'mdi-microphone-off' }}</v-icon>
       <v-tooltip activator="parent" location="bottom">
@@ -50,6 +52,7 @@
         size="small"
         :loading="webrtcStore.isConnecting"
         @click="handleToggleScreenShare"
+        class="mr-1"
     >
       <v-icon size="16">mdi-monitor-share</v-icon>
       <v-tooltip activator="parent" location="bottom">
