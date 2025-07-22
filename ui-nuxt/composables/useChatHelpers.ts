@@ -1,7 +1,7 @@
 // composables/useChatHelpers.ts - Client-side only chat helpers (Fixed circular dependency)
 
 import { ref, computed } from 'vue'
-import type { ChatMessage, ChatParticipant, MessageFormatting } from '~/types/chat.types'
+import type { ChatParticipant, MessageFormatting } from '~/types/chat.types'
 
 /**
  * Client-side chat helpers that require browser APIs

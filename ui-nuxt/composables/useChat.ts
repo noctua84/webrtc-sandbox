@@ -2,15 +2,12 @@
 
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useChatStore } from '~/stores/chat.store'
+import { useChatHelpers } from '~/composables/useChatHelpers'
 import { useRoomStore } from '~/stores/room.store'
 import {
-    convertEmojiShortcodes,
     validateMessage,
-    filterMentionSuggestions,
-    getTypingIndicatorText,
-    parseMentions
 } from '~/helper/chat.helper'
-import type { ChatMessage, MentionSuggestion, MessageFormatting } from '~/types/chat.types'
+import type { ChatMessage } from '~/types/chat.types'
 
 export interface UseChatOptions {
     autoScroll?: boolean
@@ -19,6 +16,13 @@ export interface UseChatOptions {
     enableFormatting?: boolean
     enableMentions?: boolean
     enableEmoji?: boolean
+}
+
+interface MessageFormatting {
+    enableMarkdown: boolean
+    enableEmoji: boolean
+    enableLinks: boolean
+    enableCodeBlocks: boolean
 }
 
 export function useChat(options: UseChatOptions = {}) {
@@ -41,7 +45,7 @@ export function useChat(options: UseChatOptions = {}) {
         formatRelativeTime,
         isEmojiOnly,
         createDebouncedFunction,
-        createThrottledFunction
+        createThrottledFunction,
     } = useChatHelpers()
 
     // Local reactive state

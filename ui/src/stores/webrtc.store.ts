@@ -19,45 +19,11 @@ import {
 // CONSTANTS & CONFIGURATION
 // ============================================================================
 
-const ICE_SERVERS: RTCIceServer[] = [
-    // Google STUN servers
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-
-    // Cloudflare STUN servers
-    { urls: 'stun:stun.cloudflare.com:3478' },
-
-    // OpenRelay free TURN servers (for development/testing)
-    {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-    {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-    },
-
-    // Twilio STUN servers (backup)
-    { urls: 'stun:global.stun.twilio.com:3478' },
+// Basic STUN servers for fallback
+const FALLBACK_ICE_SERVERS: RTCIceServer[] = [
+    { urls: ['stun:stun.l.google.com:19302'] },
+    { urls: ['stun:stun1.l.google.com:19302'] },
 ];
-
-const RTC_CONFIGURATION: RTCConfiguration = {
-    iceServers: ICE_SERVERS,
-    iceCandidatePoolSize: 10,
-    iceTransportPolicy: 'all', // Use both STUN and TURN
-    bundlePolicy: 'balanced',
-    rtcpMuxPolicy: 'require'
-};
 
 const CONNECTION_CONFIG = {
     MAX_RETRY_ATTEMPTS: 3,
@@ -69,6 +35,13 @@ const CONNECTION_CONFIG = {
 // ============================================================================
 // TYPES & INTERFACES
 // ============================================================================
+interface TurnCredentials {
+    username: string;
+    password: string;
+    ttl: number;
+    servers: string[];
+    expiresAt: number;
+}
 
 interface ConnectionAttempt {
     count: number;
@@ -105,6 +78,21 @@ const isValidRoomContext = (roomId: string): boolean =>
     !!roomStore.currentRoom && roomStore.currentRoom.id === roomId;
 
 /**
+const logWebRTCStates = (participantId: string, connection: RTCPeerConnection, operation: string) => {
+    return {
+        operation,
+        participantId,
+        connectionState: connection.connectionState,
+        iceConnectionState: connection.iceConnectionState,
+        iceGatheringState: connection.iceGatheringState,
+        signalingState: connection.signalingState,
+        hasLocalDescription: !!connection.localDescription,
+        hasRemoteDescription: !!connection.remoteDescription,
+        localDescriptionType: connection.localDescription?.type,
+        remoteDescriptionType: connection.remoteDescription?.type
+    };
+};
+
 const createDetailedError = (
     operation: string,
     participantId: string,
@@ -155,11 +143,17 @@ class WebRTCStore {
     mediaError: string | null = null;
     logs: LogEntry[] = [];
 
+    // TURN credentials management
+    @observable turnCredentials: TurnCredentials | null = null;
+    @observable isRefreshingCredentials: boolean = false;
+    @observable credentialError: string | null = null;
+
     // Internal state (not observable)
     private pendingIceCandidates: Map<string, RTCIceCandidateInit[]> = new Map();
     private connectionAttempts: Map<string, ConnectionAttempt> = new Map();
     private connectionInitiators: Set<string> = new Set();
     private connectionTimeouts: Map<string, NodeJS.Timeout> = new Map();
+    private credentialRefreshInterval: NodeJS.Timeout | null = null;
 
     @observable connectivityTestResult: ConnectivityTestResult | null = null;
     @observable isRunningConnectivityTest = false;
@@ -173,11 +167,156 @@ class WebRTCStore {
             hasAudio: true,
             isScreenSharing: true,
             mediaError: true,
-            logs: true
+            logs: true,
+            turnCredentials: true,
+            isRefreshingCredentials: true,
+            credentialError: true
         });
 
         this.setupSocketListeners();
         this.log('info', '🚀 WebRTC Store initialized with enhanced logging');
+    }
+
+    // ========================================================================
+    // TURN CREDENTIALS MANAGEMENT
+    // ========================================================================
+
+    @action
+    async refreshTurnCredentials(userName?: string): Promise<void> {
+        if (this.isRefreshingCredentials) {
+            this.log('info', '🔄 TURN credential refresh already in progress');
+            return;
+        }
+
+        runInAction(() => {
+            this.isRefreshingCredentials = true;
+            this.credentialError = null;
+        });
+
+        try {
+            const currentUserName = userName || roomStore.currentParticipant?.userName || 'anonymous';
+
+            this.log('info', '🔑 Requesting fresh TURN credentials', { userName: currentUserName });
+
+            const response = await fetch('http://localhost:3001/api/turn-credentials', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ userName: currentUserName })
+            });
+
+            if (!response.ok) {
+                throw new Error(`TURN credential request failed: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+
+            if (!data.success) {
+                throw new Error('TURN credential generation failed on server');
+            }
+
+            const credentials: TurnCredentials = {
+                username: data.userName,
+                password: data.password,
+                ttl: data.ttl,
+                servers: data.servers,
+                expiresAt: Date.now() + (data.ttl * 1000) - 60000 // Refresh 1 minute before expiry
+            };
+
+            runInAction(() => {
+                this.turnCredentials = credentials;
+                this.isRefreshingCredentials = false;
+                this.credentialError = null;
+            });
+
+            this.log('success', '✅ TURN credentials refreshed successfully', {
+                username: credentials.username,
+                ttl: credentials.ttl,
+                servers: credentials.servers,
+                expiresAt: new Date(credentials.expiresAt).toISOString()
+            });
+
+            // Schedule next refresh
+            this.scheduleCredentialRefresh(credentials.expiresAt - Date.now());
+
+        } catch (error) {
+            const errorMessage = (error as Error).message;
+
+            runInAction(() => {
+                this.isRefreshingCredentials = false;
+                this.credentialError = errorMessage;
+            });
+
+            this.log('error', '❌ Failed to refresh TURN credentials', {
+                error: errorMessage,
+                willUseFallback: true
+            });
+
+            // Schedule retry in 30 seconds
+            setTimeout(() => {
+                if (!this.turnCredentials) {
+                    this.refreshTurnCredentials(userName);
+                }
+            }, 30000);
+        }
+    }
+
+    private async scheduleCredentialRefresh(delayMs: number)  {
+        if (this.credentialRefreshInterval) {
+            clearTimeout(this.credentialRefreshInterval);
+        }
+
+        this.credentialRefreshInterval = setTimeout(async () => {
+            this.log('info', '⏰ Scheduled TURN credential refresh triggered');
+            await this.refreshTurnCredentials();
+        }, delayMs);
+
+        this.log('info', '⏰ Scheduled TURN credential refresh', {
+            delayMs,
+            refreshAt: new Date(Date.now() + delayMs).toISOString()
+        });
+    }
+
+    private getCurrentIceServers(): RTCIceServer[] {
+        const iceServers: RTCIceServer[] = [...FALLBACK_ICE_SERVERS];
+
+        if (this.turnCredentials && Date.now() < this.turnCredentials.expiresAt) {
+            // Add TURN servers with credentials
+            this.turnCredentials.servers.forEach(serverUrl => {
+                if (serverUrl.startsWith('turn:')) {
+                    iceServers.push({
+                        urls: [serverUrl],
+                        username: this.turnCredentials!.username,
+                        credential: this.turnCredentials!.password
+                    });
+                } else if (serverUrl.startsWith('stun:')) {
+                    iceServers.push({ urls: [serverUrl] });
+                }
+            });
+
+            this.log('info', '🌐 Using TURN credentials for ICE servers', {
+                turnServers: this.turnCredentials.servers.filter(url => url.startsWith('turn:')).length,
+                stunServers: iceServers.filter(server => server.urls).length
+            });
+        } else {
+            this.log('warning', '⚠️ Using fallback STUN servers only (no valid TURN credentials)', {
+                hasCredentials: !!this.turnCredentials,
+                credentialsExpired: this.turnCredentials ? Date.now() >= this.turnCredentials.expiresAt : false
+            });
+        }
+
+        return iceServers;
+    }
+
+    private getCurrentRTCConfiguration(): RTCConfiguration {
+        return {
+            iceServers: this.getCurrentIceServers(),
+            iceCandidatePoolSize: 10,
+            iceTransportPolicy: 'all',
+            bundlePolicy: 'balanced',
+            rtcpMuxPolicy: 'require'
+        };
     }
 
     // ========================================================================
@@ -512,14 +651,25 @@ class WebRTCStore {
     }
 
     // ========================================================================
-    // PEER CONNECTION MANAGEMENT WITH ENHANCED LOGGING
+    // PEER CONNECTION MANAGEMENT WITH DYNAMIC CREDENTIALS
     // ========================================================================
 
     async createPeerConnection(participantId: string, userName: string, isInitiator: boolean): Promise<PeerConnection> {
         this.log('info', 'Creating peer connection', { participantId, userName, isInitiator });
 
+        // Ensure we have fresh TURN credentials
+        if (!this.turnCredentials || Date.now() >= this.turnCredentials.expiresAt) {
+            this.log('info', '🔑 Refreshing TURN credentials before creating connection', {
+                participantId,
+                hasCredentials: !!this.turnCredentials,
+                credentialsExpired: this.turnCredentials ? Date.now() >= this.turnCredentials.expiresAt : false
+            });
+            await this.refreshTurnCredentials(userName);
+        }
+
         try {
-            const connection = new RTCPeerConnection(RTC_CONFIGURATION);
+            const rtcConfiguration = this.getCurrentRTCConfiguration();
+            const connection = new RTCPeerConnection(rtcConfiguration);
 
             const peerConnection: PeerConnection = {
                 participantId,
@@ -541,11 +691,13 @@ class WebRTCStore {
                 this.addStreamToPeerConnection(peerConnection, this.localStream);
             }
 
-            this.log('success', 'Peer connection created', {
+            this.log('success', 'Peer connection created with current credentials', {
                 participantId,
                 userName,
                 isInitiator,
-                totalConnections: this.peerConnections.size
+                totalConnections: this.peerConnections.size,
+                iceServerCount: rtcConfiguration?.iceServers?.length,
+                hasTurnCredentials: !!this.turnCredentials
             });
 
             return peerConnection;
@@ -880,22 +1032,17 @@ class WebRTCStore {
         }, delay);
     }
 
-    /**
-    private clearRetryAttempts(participantId: string): void {
-        const attempt = this.connectionAttempts.get(participantId);
-        if (attempt) {
-            this.connectionAttempts.delete(participantId);
-            this.log('info', '🧹 Cleared retry attempts', { participantId, attempts: attempt.count });
-        }
-    }
-        */
-
     // ========================================================================
     // PUBLIC API - MEDIA METHODS
     // ========================================================================
 
     async startMedia(constraints: MediaConstraints = { video: true, audio: true }): Promise<void> {
         this.log('info', '📹 Starting media capture', constraints);
+
+        // Refresh TURN credentials when starting media
+        if (!this.turnCredentials || Date.now() >= this.turnCredentials.expiresAt) {
+            await this.refreshTurnCredentials();
+        }
 
         runInAction(() => {
             this.mediaStatus = 'requesting';
@@ -1163,6 +1310,11 @@ class WebRTCStore {
     async connectToAllParticipants(): Promise<void> {
         if (!roomStore.currentRoom || !roomStore.currentParticipant) return;
 
+        // Refresh TURN credentials before connecting to multiple participants
+        if (!this.turnCredentials || Date.now() >= this.turnCredentials.expiresAt) {
+            await this.refreshTurnCredentials();
+        }
+
         const otherParticipants = roomStore.participants.filter(
             p => p.isConnected &&
                 p.socketId !== roomStore.currentParticipant?.socketId &&
@@ -1171,7 +1323,8 @@ class WebRTCStore {
 
         this.log('info', '🌐 Connecting to all participants', {
             participantCount: otherParticipants.length,
-            participants: otherParticipants.map(p => ({ id: p.socketId, name: p.userName }))
+            participants: otherParticipants.map(p => ({ id: p.socketId, name: p.userName })),
+            hasTurnCredentials: !!this.turnCredentials
         });
 
         // Connect to all participants in parallel
@@ -1373,10 +1526,19 @@ class WebRTCStore {
             this.stopMedia();
             this.closeAllPeerConnections();
 
+            // Clear credential refresh interval
+            if (this.credentialRefreshInterval) {
+                clearTimeout(this.credentialRefreshInterval);
+                this.credentialRefreshInterval = null;
+            }
+
             runInAction(() => {
                 this.mediaError = null;
                 this.connectivityTestResult = null;
                 this.isRunningConnectivityTest = false;
+                this.turnCredentials = null;
+                this.isRefreshingCredentials = false;
+                this.credentialError = null;
             });
 
             this.log('success', 'WebRTC store cleanup completed');
@@ -1386,7 +1548,7 @@ class WebRTCStore {
     }
 
     // ========================================================================
-    // COMPUTED PROPERTIES WITH DIAGNOSTIC INFO
+    // COMPUTED PROPERTIES
     // ========================================================================
 
     get isMediaActive(): boolean {
@@ -1436,6 +1598,17 @@ class WebRTCStore {
         return this.connectionAttempts.size;
     }
 
+    get hasTurnCredentials(): boolean {
+        return !!this.turnCredentials && Date.now() < this.turnCredentials.expiresAt;
+    }
+
+    get credentialStatus(): 'valid' | 'expired' | 'missing' | 'refreshing' {
+        if (this.isRefreshingCredentials) return 'refreshing';
+        if (!this.turnCredentials) return 'missing';
+        if (Date.now() >= this.turnCredentials.expiresAt) return 'expired';
+        return 'valid';
+    }
+
     get diagnosticSummary(): any {
         return {
             mediaStatus: this.mediaStatus,
@@ -1443,6 +1616,12 @@ class WebRTCStore {
             connectedPeers: this.connectedPeersCount,
             pendingCandidates: this.pendingCandidatesCount,
             activeRetries: this.activeRetryCount,
+            turnCredentials: {
+                status: this.credentialStatus,
+                expiresAt: this.turnCredentials?.expiresAt,
+                username: this.turnCredentials?.username,
+                hasServers: !!this.turnCredentials?.servers?.length
+            },
             connectionStates: Array.from(this.peerConnections.values()).map(pc => ({
                 participantId: pc.participantId,
                 userName: pc.userName,
@@ -1487,311 +1666,7 @@ class WebRTCStore {
         return !this.isRunningConnectivityTest;
     }
 
-    // ========================================================================
-    // WEBRTC DIAGNOSTIC METHODS
-    // ========================================================================
-
-    async testWebRTCConnectivity(): Promise<{
-        stunConnectivity: boolean;
-        candidateGeneration: boolean;
-        mediaAccess: boolean;
-        detectedIssues: string[];
-        recommendations: string[];
-    }> {
-        const results = {
-            stunConnectivity: false,
-            candidateGeneration: false,
-            mediaAccess: false,
-            detectedIssues: [] as string[],
-            recommendations: [] as string[]
-        };
-
-        this.log('info', '🧪 Starting comprehensive WebRTC connectivity test');
-
-        // Test 1: Media Access
-        this.log('info', '🎥 Testing media device access...');
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            results.mediaAccess = true;
-            this.log('success', '✅ Media access successful', {
-                videoTracks: stream.getVideoTracks().length,
-                audioTracks: stream.getAudioTracks().length
-            });
-            stream.getTracks().forEach(track => track.stop()); // Clean up
-        } catch (error) {
-            results.detectedIssues.push('Media access denied or unavailable');
-            results.recommendations.push('Grant camera/microphone permissions in browser');
-            this.log('error', '❌ Media access failed', { error: (error as Error).message });
-        }
-
-        // Test 2: STUN Server Connectivity and ICE Candidate Generation
-        this.log('info', '🌐 Testing STUN server connectivity...');
-
-        const stunServers = [
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302',
-            'stun:stun.google.com:19302',
-            'stun:stun.stunprotocol.org:3478'
-        ];
-
-        for (const stunServer of stunServers) {
-            try {
-                const testResult = await this.testSingleStunServer(stunServer);
-                if (testResult.success) {
-                    results.stunConnectivity = true;
-                    results.candidateGeneration = true;
-                    this.log('success', '✅ STUN server connectivity confirmed', {
-                        server: stunServer,
-                        candidateType: testResult.candidateType,
-                        address: testResult.address
-                    });
-                    break; // Found working STUN server
-                } else {
-                    this.log('warning', '⚠️ STUN server failed', {
-                        server: stunServer,
-                        issue: testResult.error
-                    });
-                }
-            } catch (error) {
-                this.log('error', '💥 STUN server test error', {
-                    server: stunServer,
-                    error: (error as Error).message
-                });
-            }
-        }
-
-        // Test 3: Full WebRTC Connection Test (self-connection)
-        this.log('info', '🔗 Testing full WebRTC connection flow...');
-        try {
-            const connectionTest = await this.testWebRTCConnectionFlow();
-            if (connectionTest.success) {
-                this.log('success', '✅ WebRTC connection flow successful');
-            } else {
-                results.detectedIssues.push(`WebRTC connection flow failed: ${connectionTest.error}`);
-                this.log('error', '❌ WebRTC connection flow failed', { error: connectionTest.error });
-            }
-        } catch (error) {
-            results.detectedIssues.push('WebRTC connection flow test crashed');
-            this.log('error', '💥 WebRTC connection flow test error', { error: (error as Error).message });
-        }
-
-        // Analyze results and provide recommendations
-        if (!results.stunConnectivity) {
-            results.detectedIssues.push('No STUN server connectivity');
-            results.recommendations.push('Check firewall settings - UDP port 3478 and 19302 should be open');
-            results.recommendations.push('Try testing on mobile hotspot to isolate network issues');
-            results.recommendations.push('Contact network administrator about WebRTC/STUN access');
-        }
-
-        if (!results.candidateGeneration) {
-            results.detectedIssues.push('ICE candidate generation failed');
-            results.recommendations.push('Network may be blocking UDP traffic required for WebRTC');
-        }
-
-        if (!results.mediaAccess) {
-            results.detectedIssues.push('Media device access issues');
-            results.recommendations.push('Ensure browser has camera/microphone permissions');
-            results.recommendations.push('Check if another application is using the camera');
-        }
-
-        this.log('info', '📊 WebRTC connectivity test completed', {
-            stunConnectivity: results.stunConnectivity,
-            candidateGeneration: results.candidateGeneration,
-            mediaAccess: results.mediaAccess,
-            issueCount: results.detectedIssues.length,
-            recommendationCount: results.recommendations.length
-        });
-
-        return results;
-    }
-
-    private async testSingleStunServer(stunServer: string): Promise<{
-        success: boolean;
-        candidateType?: RTCIceCandidateType | null | undefined;
-        address?: string | null | undefined;
-        error?: string;
-    }> {
-        return new Promise((resolve) => {
-            const pc = new RTCPeerConnection({
-                iceServers: [{ urls: stunServer }]
-            });
-
-            let resolved = false;
-            const timeout = setTimeout(() => {
-                if (!resolved) {
-                    resolved = true;
-                    pc.close();
-                    resolve({ success: false, error: 'Timeout - no candidates received' });
-                }
-            }, 10000); // 10 second timeout
-
-            pc.onicecandidate = (event) => {
-                if (event.candidate && !resolved) {
-                    resolved = true;
-                    clearTimeout(timeout);
-                    pc.close();
-
-                    const candidate = event.candidate;
-                    resolve({
-                        success: true,
-                        candidateType: candidate.type,
-                        address: candidate.address
-                    });
-                }
-            };
-
-            pc.onicecandidateerror = (event) => {
-                if (!resolved) {
-                    resolved = true;
-                    clearTimeout(timeout);
-                    pc.close();
-                    resolve({
-                        success: false,
-                        error: `ICE candidate error: ${(event as any).errorText || 'Unknown error'}`
-                    });
-                }
-            };
-
-            // Create offer to start ICE gathering
-            pc.createDataChannel('test');
-            pc.createOffer()
-                .then(offer => pc.setLocalDescription(offer))
-                .catch(error => {
-                    if (!resolved) {
-                        resolved = true;
-                        clearTimeout(timeout);
-                        pc.close();
-                        resolve({ success: false, error: error.message });
-                    }
-                });
-        });
-    }
-
-    private async testWebRTCConnectionFlow(): Promise<{ success: boolean; error?: string }> {
-        return new Promise((resolve) => {
-            const pc1 = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-            });
-            const pc2 = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-            });
-
-            let resolved = false;
-            const timeout = setTimeout(() => {
-                if (!resolved) {
-                    resolved = true;
-                    pc1.close();
-                    pc2.close();
-                    resolve({ success: false, error: 'Connection test timeout' });
-                }
-            }, 15000);
-
-            // Set up connection monitoring
-            pc1.onconnectionstatechange = () => {
-                if (pc1.connectionState === 'connected' && !resolved) {
-                    resolved = true;
-                    clearTimeout(timeout);
-                    pc1.close();
-                    pc2.close();
-                    resolve({ success: true });
-                } else if (pc1.connectionState === 'failed' && !resolved) {
-                    resolved = true;
-                    clearTimeout(timeout);
-                    pc1.close();
-                    pc2.close();
-                    resolve({ success: false, error: 'Connection failed during test' });
-                }
-            };
-
-            // Set up ICE candidate exchange
-            pc1.onicecandidate = (event) => {
-                if (event.candidate) {
-                    pc2.addIceCandidate(event.candidate).catch(() => {});
-                }
-            };
-
-            pc2.onicecandidate = (event) => {
-                if (event.candidate) {
-                    pc1.addIceCandidate(event.candidate).catch(() => {});
-                }
-            };
-
-            // Create data channels
-            pc2.ondatachannel = (event) => {
-                const dc2 = event.channel;
-                dc2.onopen = () => {
-                    // Connection successful
-                };
-            };
-
-            // Start connection process
-            pc1.createOffer()
-                .then(offer => pc1.setLocalDescription(offer))
-                .then(() => pc2.setRemoteDescription(pc1.localDescription!))
-                .then(() => pc2.createAnswer())
-                .then(answer => pc2.setLocalDescription(answer))
-                .then(() => pc1.setRemoteDescription(pc2.localDescription!))
-                .catch(error => {
-                    if (!resolved) {
-                        resolved = true;
-                        clearTimeout(timeout);
-                        pc1.close();
-                        pc2.close();
-                        resolve({ success: false, error: error.message });
-                    }
-                });
-        });
-    }
-
-    // Helper method to run the diagnostic and display results
-    async runConnectivityDiagnostic(): Promise<void> {
-        this.log('info', '🚀 Running comprehensive WebRTC connectivity diagnostic...');
-
-        const results = await this.testWebRTCConnectivity();
-
-        // Display comprehensive results
-        this.log('info', '📋 DIAGNOSTIC RESULTS SUMMARY', {
-            mediaAccess: results.mediaAccess ? '✅ PASS' : '❌ FAIL',
-            stunConnectivity: results.stunConnectivity ? '✅ PASS' : '❌ FAIL',
-            candidateGeneration: results.candidateGeneration ? '✅ PASS' : '❌ FAIL',
-            overallStatus: (results.mediaAccess && results.stunConnectivity && results.candidateGeneration) ? '✅ HEALTHY' : '❌ ISSUES DETECTED'
-        });
-
-        if (results.detectedIssues.length > 0) {
-            this.log('error', '🚨 DETECTED ISSUES', {
-                issues: results.detectedIssues,
-                count: results.detectedIssues.length
-            });
-        }
-
-        if (results.recommendations.length > 0) {
-            this.log('info', '💡 RECOMMENDATIONS', {
-                recommendations: results.recommendations,
-                count: results.recommendations.length
-            });
-        }
-
-        // Specific guidance based on results
-        if (!results.stunConnectivity) {
-            this.log('warning', '⚠️ NETWORK CONNECTIVITY ISSUE DETECTED', {
-                problem: 'STUN servers are not reachable',
-                impact: 'WebRTC connections will fail to establish',
-                commonCauses: [
-                    'Corporate firewall blocking UDP traffic',
-                    'Router/ISP blocking WebRTC traffic',
-                    'Proxy server interference',
-                    'Network configuration issues'
-                ],
-                immediateActions: [
-                    'Test on mobile hotspot to isolate network issues',
-                    'Try different WiFi network',
-                    'Contact network administrator',
-                    'Check browser console for network errors'
-                ]
-            });
-        }
-    }
-
+    // Helper methods for categorizing issues
     private categorizeCriticalIssues(result: ConnectivityTestResult): string[] {
         const critical: string[] = [];
 
@@ -1808,7 +1683,6 @@ class WebRTCStore {
         return critical;
     }
 
-// Helper method to categorize network issues
     private categorizeNetworkIssues(result: ConnectivityTestResult): string[] {
         const network: string[] = [];
 
