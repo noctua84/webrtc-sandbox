@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { Request, Response } from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
@@ -202,7 +202,7 @@ io.on('connection', (socket) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
+app.get('/health', (req: Request, res: Response) => {
     const rooms = manager.getRooms();
     const activeRooms = Array.from(rooms.values()).filter(room => room.isActive);
     const connectedParticipants = Array.from(rooms.values())
@@ -224,7 +224,7 @@ app.get('/health', (req, res) => {
 });
 
 // Get rooms info endpoint
-app.get('/rooms', (req, res) => {
+app.get('/rooms', (req: Request, res: Response) => {
     const rooms = manager.getRooms();
 
     const allRooms = Array.from(rooms.values()).map(room => ({
@@ -253,6 +253,20 @@ app.get('/rooms', (req, res) => {
     });
     res.json(roomsInfo);
 });
+
+app.post('/api/turn-credentials', (req: Request, res: Response) => {
+    const userName = req.body.userName;
+    const credentials = manager.generateTurnCredentials(userName);
+
+    res.json({
+        success: true,
+        timestamp: new Date().toISOString(),
+        userName: credentials.username,
+        password: credentials.password,
+        ttl: credentials.ttl,
+        servers: credentials.urls
+    });
+})
 
 // Room cleanup endpoint for debugging
 app.post('/cleanup', (req, res) => {

@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+// Load environment variables from .env file
+dotenv.config();
 
 // Server configuration constants
 
@@ -36,7 +39,7 @@ export const ROOM_CONFIG = {
 
     // Cleanup settings
     MAX_INACTIVE_ROOMS: 100, // Maximum number of inactive rooms to keep
-    MAX_EXPIRED_TOKENS: 1000 // Maximum number of inactive participants to keep
+    MAX_EXPIRED_TOKENS: 1000, // Maximum number of inactive participants to keep
 }
 
 export const LOGGING_CONFIG = {
@@ -91,6 +94,11 @@ export const getEnvironmentConfig = () => {
         cleanupInterval: env === 'test' ? 1000 : ROOM_CONFIG.CLEANUP_INTERVAL,
 
         // Adjust timeouts for environment
-        roomTimeout: env === 'test' ? 5000 : ROOM_CONFIG.TIMEOUT_DURATION
+        roomTimeout: env === 'test' ? 5000 : ROOM_CONFIG.TIMEOUT_DURATION,
+
+        // TURN server settings
+        turnSecret: process.env.COTURN_SECRET,
+        turnServerUrl: process.env.COTURN_SERVER_URL || 'localhost',
+        turnServerPort: process.env.COTURN_SERVER_PORT || 3478,
     };
 };

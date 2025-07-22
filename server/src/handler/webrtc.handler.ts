@@ -11,7 +11,7 @@ import {RoomManager} from "../roomManager";
 import {log} from "../logging";
 
 // ============================================================================
-// ENHANCED LOGGING UTILITIES
+// ENHANCED LOGGING UTILITIES WITH TURN ANALYSIS
 // ============================================================================
 
 const logWebRTCEvent = (eventType: string, socket: Socket, data: any, additional?: any) => {
@@ -27,19 +27,40 @@ const logWebRTCEvent = (eventType: string, socket: Socket, data: any, additional
 };
 
 const logSdpDetails = (sdp: RTCSessionDescriptionInit) => {
+    const sdpText = sdp.sdp || '';
+
+    // Analyze SDP for TURN server references
+    const turnServers = extractTurnServersFromSdp(sdpText);
+    const stunServers = extractStunServersFromSdp(sdpText);
+
     return {
         type: sdp.type,
-        sdpLength: sdp.sdp?.length || 0,
-        hasVideo: sdp.sdp?.includes('m=video') || false,
-        hasAudio: sdp.sdp?.includes('m=audio') || false,
-        iceOptions: sdp.sdp?.includes('ice-options') || false,
-        candidateCount: (sdp.sdp?.match(/a=candidate/g) || []).length
+        sdpLength: sdpText.length,
+        hasVideo: sdpText.includes('m=video'),
+        hasAudio: sdpText.includes('m=audio'),
+        iceOptions: sdpText.includes('ice-options'),
+        candidateCount: (sdpText.match(/a=candidate/g) || []).length,
+        bundlePolicy: sdpText.includes('a=group:BUNDLE'),
+        rtcpMux: sdpText.includes('a=rtcp-mux'),
+        // TURN/STUN analysis
+        turnServerCount: turnServers.length,
+        stunServerCount: stunServers.length,
+        hasCustomTurnServer: turnServers.some(server => server.includes('157.90.27.220')),
+        iceCredentials: {
+            hasIceUfrag: sdpText.includes('a=ice-ufrag'),
+            hasIcePwd: sdpText.includes('a=ice-pwd'),
+            iceUfragCount: (sdpText.match(/a=ice-ufrag/g) || []).length
+        }
     };
 };
 
 const logIceCandidateDetails = (candidate: RTCIceCandidateInit) => {
     const candidateStr = candidate.candidate || '';
     const parts = candidateStr.split(' ');
+
+    // Detect if this is from our TURN server
+    const isFromCustomTurn = candidateStr.includes('157.90.27.220');
+    const candidateType = parts[7] || 'unknown';
 
     return {
         foundation: parts[0] || 'unknown',
@@ -48,11 +69,38 @@ const logIceCandidateDetails = (candidate: RTCIceCandidateInit) => {
         priority: parts[3] || 'unknown',
         address: parts[4] || 'unknown',
         port: parts[5] || 'unknown',
-        type: parts[7] || 'unknown',
+        type: candidateType,
         candidateLength: candidateStr.length,
         hasRelatedAddress: candidateStr.includes('raddr'),
-        hasRelatedPort: candidateStr.includes('rport')
+        hasRelatedPort: candidateStr.includes('rport'),
+        // TURN server analysis
+        isFromCustomTurn,
+        isRelay: candidateType === 'relay',
+        isSrflx: candidateType === 'srflx',
+        isHost: candidateType === 'host',
+        networkInsight: {
+            likelyTurnRelay: candidateType === 'relay' && isFromCustomTurn,
+            likelyStunSrflx: candidateType === 'srflx' && isFromCustomTurn,
+            publicStunCandidate: candidateType === 'srflx' && !isFromCustomTurn
+        }
     };
+};
+
+// Helper functions for SDP analysis
+const extractTurnServersFromSdp = (sdp: string): string[] => {
+    const turnMatches = sdp.match(/a=candidate:[^\s]+ \d+ \w+ \d+ [^\s]+ \d+ typ relay/g) || [];
+    return turnMatches.map(match => {
+        const parts = match.split(' ');
+        return parts[4] || 'unknown'; // Extract IP address
+    }).filter((value, index, self) => self.indexOf(value) === index); // Remove duplicates
+};
+
+const extractStunServersFromSdp = (sdp: string): string[] => {
+    const stunMatches = sdp.match(/a=candidate:[^\s]+ \d+ \w+ \d+ [^\s]+ \d+ typ srflx/g) || [];
+    return stunMatches.map(match => {
+        const parts = match.split(' ');
+        return parts[4] || 'unknown'; // Extract IP address
+    }).filter((value, index, self) => self.indexOf(value) === index); // Remove duplicates
 };
 
 // ============================================================================
@@ -64,16 +112,42 @@ export const handleWebRTCOffer = (
     manager: RoomManager,
     io: Server,
     data: WebRTCOffer,
-    callback: (response: any) => void
+    callback?: (response: any) => void
 ) => {
     const startTime = Date.now();
+    const sdpAnalysis = logSdpDetails(data.sdp);
 
     log('info', '📨 [OFFER] Received WebRTC offer',
         logWebRTCEvent('offer-received', socket, data, {
-            sdpDetails: logSdpDetails(data.sdp),
-            processingStarted: new Date().toISOString()
+            sdpDetails: sdpAnalysis,
+            processingStarted: new Date().toISOString(),
+            turnAnalysis: {
+                hasCustomTurnCandidates: sdpAnalysis.hasCustomTurnServer,
+                totalCandidates: sdpAnalysis.candidateCount,
+                mediaTypes: {
+                    video: sdpAnalysis.hasVideo,
+                    audio: sdpAnalysis.hasAudio
+                }
+            }
         })
     );
+
+    // Log TURN server usage insights
+    if (sdpAnalysis.hasCustomTurnServer) {
+        log('success', '🔄 [OFFER] Custom TURN server detected in offer', {
+            socketId: socket.id,
+            roomId: data.roomId,
+            turnServerCount: sdpAnalysis.turnServerCount,
+            stunServerCount: sdpAnalysis.stunServerCount
+        });
+    } else {
+        log('warning', '⚠️ [OFFER] No custom TURN server detected in offer', {
+            socketId: socket.id,
+            roomId: data.roomId,
+            candidateCount: sdpAnalysis.candidateCount,
+            suggestion: 'Client may be using fallback STUN servers only'
+        });
+    }
 
     try {
         const { roomId, targetParticipantId, sdp } = data;
@@ -100,7 +174,7 @@ export const handleWebRTCOffer = (
                 success: false,
                 error: 'You are not in this room'
             };
-            return callback(response);
+            return callback?.(response);
         }
 
         // Find target participant socket
@@ -125,7 +199,7 @@ export const handleWebRTCOffer = (
                 success: false,
                 error: 'Target participant not found'
             };
-            return callback(response);
+            return callback?.(response);
         }
 
         // Forward the offer with enhanced logging
@@ -139,10 +213,14 @@ export const handleWebRTCOffer = (
             from: socket.id,
             to: targetParticipantId,
             roomId,
-            sdpDetails: logSdpDetails(sdp),
+            sdpDetails: sdpAnalysis,
             forwardingData: {
                 newTargetId: socket.id,
                 originalSender: socket.id
+            },
+            connectionContext: {
+                hasCustomTurn: sdpAnalysis.hasCustomTurnServer,
+                candidateTypes: `${sdpAnalysis.candidateCount} candidates`
             }
         });
 
@@ -153,11 +231,12 @@ export const handleWebRTCOffer = (
             to: targetParticipantId,
             roomId,
             processingTimeMs: Date.now() - startTime,
-            totalProcessingSteps: 4
+            totalProcessingSteps: 4,
+            turnServerStatus: sdpAnalysis.hasCustomTurnServer ? 'custom-turn-present' : 'fallback-only'
         });
 
         const response: { success: true } = { success: true };
-        callback(response);
+        callback?.(response);
 
     } catch (error) {
         const err = error as Error;
@@ -176,7 +255,7 @@ export const handleWebRTCOffer = (
             success: false,
             error: 'Internal server error while handling WebRTC offer'
         };
-        callback(response);
+        callback?.(response);
     }
 };
 
@@ -189,16 +268,32 @@ export const handleWebRTCAnswer = (
     manager: RoomManager,
     io: Server,
     data: WebRTCAnswer,
-    callback: (response: any) => void
+    callback?: (response: any) => void
 ) => {
     const startTime = Date.now();
+    const sdpAnalysis = logSdpDetails(data.sdp);
 
     log('info', '📨 [ANSWER] Received WebRTC answer',
         logWebRTCEvent('answer-received', socket, data, {
-            sdpDetails: logSdpDetails(data.sdp),
-            processingStarted: new Date().toISOString()
+            sdpDetails: sdpAnalysis,
+            processingStarted: new Date().toISOString(),
+            answerAnalysis: {
+                hasCustomTurnCandidates: sdpAnalysis.hasCustomTurnServer,
+                candidateCount: sdpAnalysis.candidateCount,
+                completingNegotiation: true
+            }
         })
     );
+
+    // Log TURN server usage in answer
+    if (sdpAnalysis.hasCustomTurnServer) {
+        log('success', '🔄 [ANSWER] Custom TURN server detected in answer', {
+            socketId: socket.id,
+            roomId: data.roomId,
+            turnServerCount: sdpAnalysis.turnServerCount,
+            negotiationPhase: 'answer-with-custom-turn'
+        });
+    }
 
     try {
         const { roomId, targetParticipantId, sdp } = data;
@@ -225,7 +320,7 @@ export const handleWebRTCAnswer = (
                 success: false,
                 error: 'You are not in this room'
             };
-            return callback(response);
+            return callback?.(response);
         }
 
         // Find target participant socket
@@ -250,7 +345,7 @@ export const handleWebRTCAnswer = (
                 success: false,
                 error: 'Target participant not found'
             };
-            return callback(response);
+            return callback?.(response);
         }
 
         // Forward the answer with enhanced logging
@@ -264,11 +359,15 @@ export const handleWebRTCAnswer = (
             from: socket.id,
             to: targetParticipantId,
             roomId,
-            sdpDetails: logSdpDetails(sdp),
+            sdpDetails: sdpAnalysis,
             answerFlow: {
                 originalOfferSender: targetParticipantId,
                 answerSender: socket.id,
                 completing: 'offer-answer exchange'
+            },
+            turnNegotiation: {
+                bothSidesHaveTurn: 'to-be-determined-during-ice',
+                answerHasTurn: sdpAnalysis.hasCustomTurnServer
             }
         });
 
@@ -279,11 +378,12 @@ export const handleWebRTCAnswer = (
             to: targetParticipantId,
             roomId,
             processingTimeMs: Date.now() - startTime,
-            exchangeComplete: 'offer-answer handshake done'
+            exchangeComplete: 'offer-answer handshake done',
+            nextPhase: 'ice-candidate-exchange'
         });
 
         const response: { success: true } = { success: true };
-        callback(response);
+        callback?.(response);
 
     } catch (error) {
         const err = error as Error;
@@ -302,12 +402,12 @@ export const handleWebRTCAnswer = (
             success: false,
             error: 'Internal server error while handling WebRTC answer'
         };
-        callback(response);
+        callback?.(response);
     }
 };
 
 // ============================================================================
-// ENHANCED ICE CANDIDATE HANDLER
+// ENHANCED ICE CANDIDATE HANDLER WITH TURN ANALYSIS
 // ============================================================================
 
 export const handleWebRTCIceCandidate = (
@@ -315,16 +415,54 @@ export const handleWebRTCIceCandidate = (
     manager: RoomManager,
     io: Server,
     data: WebRTCIceCandidate,
-    callback: (response: any) => void
+    callback?: (response: any) => void
 ) => {
     const startTime = Date.now();
+    const candidateAnalysis = logIceCandidateDetails(data.candidate);
 
     log('info', '🧊 [ICE] Received ICE candidate',
         logWebRTCEvent('ice-candidate-received', socket, data, {
-            candidateDetails: logIceCandidateDetails(data.candidate),
-            processingStarted: new Date().toISOString()
+            candidateDetails: candidateAnalysis,
+            processingStarted: new Date().toISOString(),
+            turnInsights: {
+                isFromCustomTurn: candidateAnalysis.isFromCustomTurn,
+                candidateType: candidateAnalysis.type,
+                isRelay: candidateAnalysis.isRelay,
+                networkType: candidateAnalysis.networkInsight
+            }
         })
     );
+
+    // Enhanced logging for TURN relay candidates
+    if (candidateAnalysis.isRelay && candidateAnalysis.isFromCustomTurn) {
+        log('success', '🔄 [ICE] TURN relay candidate from custom server!', {
+            socketId: socket.id,
+            roomId: data.roomId,
+            targetParticipantId: data.targetParticipantId,
+            relayAddress: candidateAnalysis.address,
+            relayPort: candidateAnalysis.port,
+            significance: 'NAT traversal via custom TURN server'
+        });
+    } else if (candidateAnalysis.isRelay) {
+        log('info', '🔄 [ICE] TURN relay candidate from external server', {
+            socketId: socket.id,
+            candidateType: candidateAnalysis.type,
+            address: candidateAnalysis.address
+        });
+    } else if (candidateAnalysis.isSrflx && candidateAnalysis.isFromCustomTurn) {
+        log('success', '🌐 [ICE] STUN reflexive candidate from custom server', {
+            socketId: socket.id,
+            roomId: data.roomId,
+            candidateType: candidateAnalysis.type,
+            publicAddress: candidateAnalysis.address
+        });
+    } else if (candidateAnalysis.isHost) {
+        log('info', '🏠 [ICE] Host candidate (local network)', {
+            socketId: socket.id,
+            candidateType: candidateAnalysis.type,
+            localAddress: candidateAnalysis.address
+        });
+    }
 
     try {
         const { roomId, targetParticipantId, candidate } = data;
@@ -337,7 +475,7 @@ export const handleWebRTCIceCandidate = (
             senderRoomId,
             requestedRoomId: roomId,
             isValid: senderRoomId === roomId,
-            candidateType: logIceCandidateDetails(candidate).type
+            candidateType: candidateAnalysis.type
         });
 
         if (senderRoomId !== roomId) {
@@ -345,7 +483,7 @@ export const handleWebRTCIceCandidate = (
                 socketId: socket.id,
                 senderRoomId,
                 requestedRoomId: roomId,
-                candidateType: logIceCandidateDetails(candidate).type,
+                candidateType: candidateAnalysis.type,
                 processingTimeMs: Date.now() - startTime
             });
 
@@ -353,7 +491,7 @@ export const handleWebRTCIceCandidate = (
                 success: false,
                 error: 'You are not in this room'
             };
-            return callback(response);
+            return callback?.(response);
         }
 
         // Find target participant socket
@@ -363,21 +501,21 @@ export const handleWebRTCIceCandidate = (
             targetParticipantId,
             roomId,
             targetFound: !!targetSocket,
-            candidateDetails: logIceCandidateDetails(candidate)
+            candidateDetails: candidateAnalysis
         });
 
         if (!targetSocket) {
             log('warning', '⚠️ [ICE] Target participant not found (normal during disconnection)', {
                 targetParticipantId,
                 roomId,
-                candidateType: logIceCandidateDetails(candidate).type,
+                candidateType: candidateAnalysis.type,
                 processingTimeMs: Date.now() - startTime,
                 handling: 'graceful - participant may have disconnected'
             });
 
             // Don't treat this as an error since participants might disconnect during negotiation
             const response: { success: true } = { success: true };
-            return callback(response);
+            return callback?.(response);
         }
 
         // Forward the ICE candidate with enhanced logging
@@ -387,17 +525,16 @@ export const handleWebRTCIceCandidate = (
             candidate
         };
 
-        const candidateDetails = logIceCandidateDetails(candidate);
-
         log('info', '📤 [ICE] Forwarding ICE candidate to target', {
             from: socket.id,
             to: targetParticipantId,
             roomId,
-            candidateDetails,
+            candidateDetails: candidateAnalysis,
             iceNegotiation: {
                 direction: `${socket.id} -> ${targetParticipantId}`,
-                candidateType: candidateDetails.type,
-                protocol: candidateDetails.protocol
+                candidateType: candidateAnalysis.type,
+                protocol: candidateAnalysis.protocol,
+                turnServerInvolved: candidateAnalysis.isFromCustomTurn
             }
         });
 
@@ -407,17 +544,19 @@ export const handleWebRTCIceCandidate = (
             from: socket.id,
             to: targetParticipantId,
             roomId,
-            candidateType: candidateDetails.type,
+            candidateType: candidateAnalysis.type,
             processingTimeMs: Date.now() - startTime,
             networkInfo: {
-                protocol: candidateDetails.protocol,
-                address: candidateDetails.address !== 'unknown' ? 'present' : 'unknown',
-                port: candidateDetails.port
+                protocol: candidateAnalysis.protocol,
+                address: candidateAnalysis.address !== 'unknown' ? 'present' : 'unknown',
+                port: candidateAnalysis.port,
+                turnRelay: candidateAnalysis.networkInsight.likelyTurnRelay,
+                customTurnUsed: candidateAnalysis.isFromCustomTurn
             }
         });
 
         const response: { success: true } = { success: true };
-        callback(response);
+        callback?.(response);
 
     } catch (error) {
         const err = error as Error;
@@ -426,7 +565,7 @@ export const handleWebRTCIceCandidate = (
             error: err.message,
             stack: err.stack,
             processingTimeMs: Date.now() - startTime,
-            candidateDetails: logIceCandidateDetails(data.candidate),
+            candidateDetails: candidateAnalysis,
             requestData: {
                 roomId: data.roomId,
                 targetParticipantId: data.targetParticipantId
@@ -437,6 +576,6 @@ export const handleWebRTCIceCandidate = (
             success: false,
             error: 'Internal server error while handling WebRTC ICE candidate'
         };
-        callback(response);
+        callback?.(response);
     }
 };

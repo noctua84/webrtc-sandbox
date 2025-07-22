@@ -1,7 +1,8 @@
-import type {AddParticipantResult, Participant, Room} from "./types";
+import type {AddParticipantResult, Participant, Room, TurnServerCredentials} from "./types";
 import {log} from "./logging";
 import {ROOM_CONFIG, getEnvironmentConfig} from "./config";
 import {v4 as uuidv4} from 'uuid';
+import crypto from 'crypto';
 
 export class RoomManager {
     private rooms: Map<string, Room> = new Map();
@@ -305,6 +306,39 @@ export class RoomManager {
     validateReconnectionToken(token: string, roomId: string): boolean {
         const data = this.reconnectionTokenToParticipant.get(token);
         return data?.roomId === roomId;
+    }
+
+    /**
+     * Generates TURN credentials for a user.
+     * @param userName The username for which to generate TURN credentials.
+     * @param ttl
+     * @returns An object containing the username and password for TURN authentication.
+     *
+     * @throws Error if TURN secret is not configured.
+     */
+    generateTurnCredentials(userName: string, ttl: number = 3600): TurnServerCredentials {
+        log('info', `Generating TURN credentials for user`, { userName });
+
+        if (this.cfg.turnSecret === undefined) {
+            log('error', `TURN secret is not configured`);
+            throw new Error('TURN server is not configured');
+        }
+
+        const usr = `${userName}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+        const hmac = crypto.createHmac('sha256', this.cfg.turnSecret);
+        hmac.update(usr);
+        const pass = hmac.digest('base64')
+
+        return {
+            username: usr,
+            password: pass,
+            ttl: ttl,
+            urls: [
+                `turn:${this.cfg.turnServerUrl}:${this.cfg.turnServerPort}`,
+                `stun:${this.cfg.turnServerUrl}:${this.cfg.turnServerPort}`
+            ]
+        }
     }
 
     // Getters for external access
