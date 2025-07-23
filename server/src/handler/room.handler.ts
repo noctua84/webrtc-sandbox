@@ -1,15 +1,20 @@
-import {RoomManager} from "../roomManager";
+import {RoomManager} from "../room/manager";
 import {log} from "../logging";
 import {
     CreateRoomRequest,
-    CreateRoomResponse,
-    ErrorResponse, GetRoomInfoRequest, GetRoomInfoResponse,
+    GetRoomInfoRequest,
     JoinRoomRequest,
-    type JoinRoomResponse, LeaveRoomRequest, LeaveRoomResponse, ReconnectRoomRequest, ReconnectRoomResponse,
-    RoomUpdateEvent
-} from "../types";
+    type  LeaveRoomRequest, ReconnectRoomRequest,
+} from "../types/room.types";
 import {Socket} from "socket.io";
 import {v4 as uuidv4} from 'uuid';
+import {
+    CreateRoomResponse,
+    ErrorResponse, GetRoomInfoResponse,
+    JoinRoomResponse, LeaveRoomResponse,
+    ReconnectRoomResponse,
+    RoomUpdateEvent
+} from "../types/webrtc.types";
 
 export const handleCreateRoom = (socket: Socket, manager: RoomManager, data: CreateRoomRequest, callback: (arg0: ErrorResponse | CreateRoomResponse) => void) => {
     log('info', `Received create-room request`, { socketId: socket.id, data });

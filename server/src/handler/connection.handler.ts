@@ -1,5 +1,5 @@
 import { Server, Socket } from 'socket.io';
-import { RoomManager } from '../roomManager';
+import { RoomManager } from '../room/manager';
 import { log } from '../logging';
 
 // ============================================================================

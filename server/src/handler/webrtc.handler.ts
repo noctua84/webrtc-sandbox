@@ -6,8 +6,8 @@ import {
     WebRTCAnswer,
     WebRTCIceCandidate,
     WebRTCOffer
-} from "../types";
-import {RoomManager} from "../roomManager";
+} from "../types/webrtc.types";
+import {RoomManager} from "../room/manager";
 import {log} from "../logging";
 
 // ============================================================================

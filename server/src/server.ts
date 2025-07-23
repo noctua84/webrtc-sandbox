@@ -3,22 +3,14 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import cors from 'cors';
 import type {
-    CreateRoomRequest,
-    JoinRoomRequest,
-    GetRoomInfoRequest,
     HealthStatus,
     RoomsInfo,
-    ServerToClientEvents,
-    ClientToServerEvents,
-    InterServerEvents,
-    SocketData,
-    ReconnectRoomRequest,
     WebRTCOffer,
     WebRTCAnswer,
     WebRTCIceCandidate,
-    MediaStatusUpdate, LeaveRoomRequest
-} from './types.js';
-import {RoomManager} from "./roomManager";
+    MediaStatusUpdate
+} from './types/webrtc.types.js';
+import {RoomManager} from "./room/manager";
 import {
     handleCreateRoom,
     handleGetRoomInfo,
@@ -30,7 +22,7 @@ import {handleWebRTCAnswer, handleWebRTCIceCandidate, handleWebRTCOffer} from ".
 import {handleUpdateMediaStatus} from "./handler/media.handler";
 import {handleDisconnect} from "./handler/connection.handler";
 import {log} from "./logging";
-import {getEnvironmentConfig, ROOM_CONFIG, SERVER_CONFIG} from "./config";
+import {getConfig} from "./config";
 import {
     handleAddReaction,
     handleDeleteMessage,
@@ -39,22 +31,32 @@ import {
     handleSendMessage,
     handleTypingIndicator
 } from "./handler/chat.handler";
+import helmet from "helmet";
+import { ErrorResponse, CreateRoomResponse, JoinRoomResponse, ReconnectRoomResponse, GetRoomInfoResponse, LeaveRoomResponse} from './types/webrtc.types.js';
+import { DeleteMessageRequest, EditMessageRequest, SendMessageRequest, TypingIndicatorRequest} from './types/chat.types.js';
+import {
+    CreateRoomRequest,
+    GetRoomInfoRequest,
+    JoinRoomRequest,
+    LeaveRoomRequest,
+    ReconnectRoomRequest,
+    Room
+} from "./types/room.types";
+import {ClientToServerEvents, ServerToClientEvents} from "./types/event.types";
 
 const app = express();
 const server = createServer(app);
-const cfg = getEnvironmentConfig()
+const cfg = getConfig()
 
 // Configure CORS for Socket.IO
 const io = new Server<
     ClientToServerEvents,
-    ServerToClientEvents,
-    InterServerEvents,
-    SocketData
+    ServerToClientEvents
 >(server, {
     cors: {
-        origin: SERVER_CONFIG.CORS.ORIGIN,
-        methods: SERVER_CONFIG.CORS.METHODS,
-        credentials: SERVER_CONFIG.CORS.CREDENTIALS,
+        origin: cfg.server.cors.origin,
+        methods: cfg.server.cors.methods,
+        credentials: cfg.server.cors.credentials,
     }
 });
 
@@ -62,49 +64,50 @@ const manager = new RoomManager();
 
 // Middleware
 app.use(cors({
-    origin: SERVER_CONFIG.CORS.ORIGIN,
-    methods: SERVER_CONFIG.CORS.METHODS,
-    credentials: SERVER_CONFIG.CORS.CREDENTIALS
+    origin: cfg.server.cors.origin,
+    methods: cfg.server.cors.methods,
+    credentials: cfg.server.cors.credentials
 }));
+app.use(helmet());
 app.use(express.json());
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
-    log('info', `New socket connection established`, { socketId: socket.id });
+    log('info', `New socket connection established`, {socketId: socket.id});
 
     // Handle room creation
-    socket.on('create-room', (data: CreateRoomRequest, callback) => {
-        log('info', `Socket requested to create room`, { socketId: socket.id, userName: data.userName });
-        handleCreateRoom(socket, manager, data, callback )
+    socket.on('create-room', (data: CreateRoomRequest, callback: (arg0: ErrorResponse | CreateRoomResponse) => void) => {
+        log('info', `Socket requested to create room`, {socketId: socket.id, userName: data.userName});
+        handleCreateRoom(socket, manager, data, callback)
     });
 
     // Handle joining existing room
-    socket.on('join-room', (data: JoinRoomRequest, callback) => {
-        log('info', `Socket requested to join room`, { socketId: socket.id, roomId: data.roomId });
+    socket.on('join-room', (data: JoinRoomRequest, callback: (arg0: ErrorResponse | JoinRoomResponse) => void) => {
+        log('info', `Socket requested to join room`, {socketId: socket.id, roomId: data.roomId});
         handleJoinRoom(socket, manager, data, callback)
     });
 
     // Handle explicit reconnection
-    socket.on('reconnect-room', (data: ReconnectRoomRequest, callback) => {
-        log('info', `Socket requested to reconnect to room`, { socketId: socket.id, roomId: data.roomId });
+    socket.on('reconnect-room', (data: ReconnectRoomRequest, callback: (arg0: ErrorResponse | ReconnectRoomResponse) => void) => {
+        log('info', `Socket requested to reconnect to room`, {socketId: socket.id, roomId: data.roomId});
         handleReconnectRoom(socket, manager, data, callback)
     });
 
     // Handle getting room info
-    socket.on('get-room-info', (data: GetRoomInfoRequest, callback) => {
-        log('info', `Socket requested room info`, { socketId: socket.id, roomId: data.roomId });
+    socket.on('get-room-info', (data: GetRoomInfoRequest, callback: (arg0: ErrorResponse | GetRoomInfoResponse) => void) => {
+        log('info', `Socket requested room info`, {socketId: socket.id, roomId: data.roomId});
         handleGetRoomInfo(socket, manager, data, callback);
     });
 
     // Handle leaving room explicitly
-    socket.on('leave-room', (data: LeaveRoomRequest, callback) => {
-        log('info', `Socket requested to leave room`, { socketId: socket.id, roomId: data.roomId });
+    socket.on('leave-room', (data: LeaveRoomRequest, callback: (arg0: ErrorResponse | LeaveRoomResponse) => void) => {
+        log('info', `Socket requested to leave room`, {socketId: socket.id, roomId: data.roomId});
         handleLeaveRoom(socket, manager, data, callback);
     });
 
     // WebRTC Signaling Event Handlers
     // Handle WebRTC offer
-    socket.on('webrtc-offer', (data: WebRTCOffer, callback) => {
+    socket.on('webrtc-offer', (data: WebRTCOffer, callback: ((response: any) => void) | undefined) => {
         log('info', `Received WebRTC offer`, {
             socketId: socket.id,
             roomId: data.roomId,
@@ -114,7 +117,7 @@ io.on('connection', (socket) => {
     });
 
     // Handle WebRTC answer
-    socket.on('webrtc-answer', (data: WebRTCAnswer, callback) => {
+    socket.on('webrtc-answer', (data: WebRTCAnswer, callback: ((response: any) => void) | undefined) => {
         log('info', `Received WebRTC answer`, {
             socketId: socket.id,
             roomId: data.roomId,
@@ -124,7 +127,7 @@ io.on('connection', (socket) => {
     });
 
     // Handle WebRTC ICE candidate
-    socket.on('webrtc-ice-candidate', (data: WebRTCIceCandidate, callback) => {
+    socket.on('webrtc-ice-candidate', (data: WebRTCIceCandidate, callback: ((response: any) => void) | undefined) => {
         log('info', `Received WebRTC ICE candidate`, {
             socketId: socket.id,
             roomId: data.roomId,
@@ -134,7 +137,7 @@ io.on('connection', (socket) => {
     });
 
     // Handle media status updates
-    socket.on('update-media-status', (data: MediaStatusUpdate, callback) => {
+    socket.on('update-media-status', (data: MediaStatusUpdate, callback: (response: any) => void) => {
         log('info', `Received media status update`, {
             socketId: socket.id,
             roomId: data.roomId,
@@ -149,37 +152,37 @@ io.on('connection', (socket) => {
 
     // Handle disconnect (not explicit leave)
     socket.on('disconnect', (reason) => {
-        log('info', `Socket disconnected`, { socketId: socket.id, reason });
+        log('info', `Socket disconnected`, {socketId: socket.id, reason});
         handleDisconnect(socket, manager, io, reason);
     });
 
     // Handle generic errors
     socket.on('error' as any, (error: Error) => {
-        log('error', `Socket error`, { socketId: socket.id, error: error.message });
+        log('error', `Socket error`, {socketId: socket.id, error: error.message});
     });
 
     // Handle chat messages
-    socket.on('send-message', (data, callback) => {
+    socket.on('send-message', (data: SendMessageRequest, callback: (response: any) => void) => {
         handleSendMessage(socket, manager, io, data, callback);
     });
 
-    socket.on('edit-message', (data, callback) => {
+    socket.on('edit-message', (data: EditMessageRequest, callback: (response: any) => void) => {
         handleEditMessage(socket, manager, io, data, callback);
     });
 
-    socket.on('delete-message', (data, callback) => {
+    socket.on('delete-message', (data: DeleteMessageRequest, callback: (response: any) => void) => {
         handleDeleteMessage(socket, manager, io, data, callback);
     });
 
-    socket.on('typing-indicator', (data, callback) => {
+    socket.on('typing-indicator', (data: TypingIndicatorRequest, callback: (response: any) => void) => {
         handleTypingIndicator(socket, manager, io, data, callback);
     });
 
-    socket.on('get-chat-history', (data, callback) => {
+    socket.on('get-chat-history', (data: { roomId: string; }, callback: (response: any) => void) => {
         handleGetChatHistory(socket, manager, data, callback);
     });
 
-    socket.on('add-reaction', (data, callback) => {
+    socket.on('add-reaction', (data: { roomId: any; messageId: any; emoji: any; }, callback: (response: any) => void) => {
         log('info', `Received chat reaction added`, {
             socketId: socket.id,
             roomId: data.roomId,
@@ -190,7 +193,7 @@ io.on('connection', (socket) => {
         handleAddReaction(socket, manager, io, data, callback);
     })
 
-    socket.on('remove-reaction', (data, callback) => {
+    socket.on('remove-reaction', (data: { roomId: any; messageId: any; emoji: any; userId: string; }, callback: (response: any) => void) => {
         log('info', `Received chat reaction removed`, {
             socketId: socket.id,
             roomId: data.roomId,
@@ -204,10 +207,10 @@ io.on('connection', (socket) => {
 // Health check endpoint
 app.get('/health', (req: Request, res: Response) => {
     const rooms = manager.getRooms();
-    const activeRooms = Array.from(rooms.values()).filter(room => room.isActive);
+    const activeRooms = Array.from(rooms.values()).filter((room: any) => room.isActive);
     const connectedParticipants = Array.from(rooms.values())
-        .flatMap(room => Array.from(room.participants.values()))
-        .filter(participant => participant.isConnected);
+        .flatMap((room: any) => Array.from(room.participants.values()))
+        .filter((participant: any) => participant.isConnected);
 
     const health: HealthStatus = {
         status: 'healthy',
@@ -215,7 +218,7 @@ app.get('/health', (req: Request, res: Response) => {
         uptime: process.uptime(),
         rooms: rooms.size,
         activeRooms: activeRooms.length,
-        totalParticipants: Array.from(rooms.values()).reduce((sum, room) => sum + room.participants.size, 0),
+        totalParticipants: Array.from(rooms.values()).reduce((sum: any, room: any) => sum + room.participants.size, 0),
         connectedParticipants: connectedParticipants.length
     };
 
@@ -227,7 +230,7 @@ app.get('/health', (req: Request, res: Response) => {
 app.get('/rooms', (req: Request, res: Response) => {
     const rooms = manager.getRooms();
 
-    const allRooms = Array.from(rooms.values()).map(room => ({
+    const allRooms = Array.from(rooms.values()).map((room: any) => ({
         id: room.id,
         createdAt: room.createdAt,
         lastActivity: room.lastActivity,
@@ -284,7 +287,7 @@ app.post('/cleanup', (req, res) => {
     });
 });
 
-const PORT = SERVER_CONFIG.PORT|| 3001;
+const PORT = cfg.server.port || 3001;
 
 server.listen(PORT, () => {
     log('info', `🚀 WebRTC Signaling Server started`, {
@@ -296,9 +299,9 @@ server.listen(PORT, () => {
     log('info', `📋 Rooms info available at http://localhost:${PORT}/rooms`);
     log('info', `🧹 Manual cleanup available at http://localhost:${PORT}/cleanup`);
     log('info', `⚙️ Configuration:`, {
-        roomTimeoutMinutes: cfg.roomTimeout / 60000,
-        reconnectionWindowMinutes: ROOM_CONFIG.PARTICIPANT_RECONNECTION_WINDOW / 60000,
-        cleanupIntervalMinutes: cfg.cleanupInterval / 60000
+        roomTimeoutMinutes: cfg.room.timeoutDuration / 60000,
+        reconnectionWindowMinutes: cfg.room.participantReconnectionWindow / 60000,
+        cleanupIntervalMinutes: cfg.room.cleanupInterval / 60000
     });
 });
 

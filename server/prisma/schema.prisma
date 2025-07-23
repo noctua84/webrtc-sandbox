@@ -5,11 +5,383 @@
 // Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
-  provider = "prisma-client-js"
-  output   = "../src/generated/prisma"
+  provider        = "prisma-client"
+  output          = "../generated/prisma"
+  previewFeatures = ["metrics"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+}
+
+// ================================
+// Core Models
+// ================================
+
+model Room {
+  id              String   @id @default(cuid())
+  eventId         String?  @unique // Reference to external event system
+  creator         String // Creator's socket ID initially, but can be transferred
+  createdAt       DateTime @default(now())
+  lastActivity    DateTime @default(now())
+  maxParticipants Int      @default(10)
+  timeoutDuration Int      @default(3600000) // 1 hour in milliseconds
+  isActive        Boolean  @default(true)
+
+  // Event-specific fields for pre-scheduled rooms
+  scheduledStartTime DateTime? // When the event is scheduled to start
+  eventTitle         String? // Title of the event for display
+  eventDescription   String? // Description of the event
+  isPreScheduled     Boolean   @default(false) // Whether this room was created for a scheduled event
+  hostUserId         String? // Host user ID from external system (not socket ID)
+  hostUserName       String? // Host display name from external system
+
+  // Relations
+  participants   Participant[]
+  chatMessages   ChatMessage[]
+  systemMessages SystemMessage[]
+
+  @@index([isActive])
+  @@index([lastActivity])
+  @@index([createdAt])
+  @@index([eventId])
+  @@index([isPreScheduled])
+  @@index([scheduledStartTime])
+  // Indexes for performance
+  @@map("rooms")
+}
+
+model Participant {
+  id                String   @id @default(cuid())
+  socketId          String   @unique
+  userName          String
+  isCreator         Boolean  @default(false)
+  joinedAt          DateTime @default(now())
+  lastSeen          DateTime @default(now())
+  reconnectionToken String?  @unique
+
+  // Note: Volatile media states (hasVideo, hasAudio, isScreenSharing, isConnected)
+  // are stored in Redis/memory for performance - not in database
+
+  // Relations
+  roomId String
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  // Chat relations - Updated to remove editor relation since we track edits in history
+  sentMessages     ChatMessage[]     @relation("MessageSender")
+  reactions        MessageReaction[]
+  typingIndicators TypingIndicator[]
+
+  @@index([roomId])
+  @@index([socketId])
+  @@index([reconnectionToken])
+  @@map("participants")
+}
+
+// ================================
+// Chat System Models
+// ================================
+
+model ChatMessage {
+  id              String      @id @default(cuid())
+  roomId          String
+  senderId        String
+  senderName      String // Denormalized for performance
+  content         String      @db.Text
+  originalContent String      @db.Text // Store original content before any edits
+  timestamp       DateTime    @default(now())
+  type            MessageType @default(TEXT)
+
+  // Message management - soft delete approach
+  isDeleted      Boolean   @default(false)
+  deletedAt      DateTime?
+  deletedBy      String? // Socket ID of who deleted it (can be different from sender)
+  deletionReason String? // 'user_request', 'admin_action'
+
+  // Edit tracking
+  isEdited  Boolean   @default(false)
+  editedAt  DateTime?
+  editCount Int       @default(0) // Track number of edits
+
+  // Threading and mentions
+  replyToId String? // Reference to parent message
+  mentions  String[] // Array of mentioned participant socket IDs
+
+  // Basic compliance fields (minimal for video chat context)
+  ipAddress   String? // IP address when message was sent (for legal compliance)
+  messageHash String? // Hash of original content for integrity verification
+
+  // Relations
+  room      Room                 @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  sender    Participant          @relation("MessageSender", fields: [senderId], references: [socketId], onDelete: Cascade)
+  replyTo   ChatMessage?         @relation("MessageThread", fields: [replyToId], references: [id])
+  replies   ChatMessage[]        @relation("MessageThread")
+  reactions MessageReaction[]
+  history   ChatMessageHistory[] // Edit and deletion history only
+
+  @@index([roomId, timestamp])
+  @@index([senderId])
+  @@index([replyToId])
+  @@index([type])
+  @@index([isDeleted])
+  @@map("chat_messages")
+}
+
+model ChatMessageHistory {
+  id        String @id @default(cuid())
+  messageId String
+  roomId    String // Denormalized for easier querying
+  senderId  String // Denormalized for easier querying
+
+  // Action tracking (simplified)
+  actionType      MessageActionType
+  actionTimestamp DateTime          @default(now())
+  actionBy        String // Socket ID who performed the action
+
+  // Content tracking
+  previousContent String? @db.Text // Content before this action
+  newContent      String? @db.Text // Content after this action (for edits)
+
+  // Context (minimal)
+  actionReason String? // Why the action was taken
+
+  // Basic compliance
+  ipAddress   String? // IP address when action occurred
+  contentHash String? // Hash of content for integrity
+
+  // Relations
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId, actionTimestamp])
+  @@index([roomId, actionTimestamp])
+  @@index([actionType])
+  @@map("chat_message_history")
+}
+
+model MessageReaction {
+  id            String   @id @default(cuid())
+  messageId     String
+  participantId String
+  emoji         String
+  createdAt     DateTime @default(now())
+
+  // Relations
+  message     ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  participant Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  // Ensure one reaction per participant per emoji per message
+  @@unique([messageId, participantId, emoji])
+  @@index([messageId])
+  @@map("message_reactions")
+}
+
+model SystemMessage {
+  id        String            @id @default(cuid())
+  roomId    String
+  type      SystemMessageType
+  content   String
+  userName  String? // Associated user name if applicable
+  userId    String? // Associated socket ID if applicable
+  timestamp DateTime          @default(now())
+  metadata  Json? // Additional structured data
+
+  // Relations
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, timestamp])
+  @@index([type])
+  @@map("system_messages")
+}
+
+model TypingIndicator {
+  id            String   @id @default(cuid())
+  roomId        String
+  participantId String
+  isTyping      Boolean  @default(true)
+  updatedAt     DateTime @default(now())
+
+  // Relations
+  participant Participant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+
+  // One typing indicator per participant per room
+  @@unique([roomId, participantId])
+  @@index([roomId])
+  @@map("typing_indicators")
+}
+
+// ================================
+// WebRTC Session Models
+// ================================
+
+// ICE Candidates should NOT be persisted - they're handled in memory/Redis
+// Only store high-level connection analytics for debugging
+
+model PeerConnectionAnalytics {
+  id                 String              @id @default(cuid())
+  roomId             String
+  initiatorId        String // Socket ID of connection initiator
+  targetId           String // Socket ID of connection target
+  connectionState    PeerConnectionState @default(NEW)
+  iceConnectionState IceConnectionState  @default(NEW)
+  createdAt          DateTime            @default(now())
+  establishedAt      DateTime?
+  failedAt           DateTime?
+  lastStateChange    DateTime            @default(now())
+
+  // Analytics data (not real-time states)
+  candidatesGenerated Int      @default(0)
+  candidatesReceived  Int      @default(0)
+  connectionDuration  Int? // Milliseconds to establish
+  failureReason       String?
+  networkType         String? // 'wifi', 'cellular', 'ethernet'
+  candidateTypesUsed  String[] // ['host', 'srflx', 'relay']
+
+  // Note: SDP offers/answers also shouldn't be persisted in most cases
+  // They're only useful for immediate signaling exchange
+
+  @@unique([roomId, initiatorId, targetId])
+  @@index([roomId])
+  @@index([connectionState])
+  @@index([createdAt])
+  @@map("peer_connection_analytics")
+}
+
+// ================================
+// Monitoring and Analytics Models
+// ================================
+
+model RoomActivity {
+  id            String   @id @default(cuid())
+  roomId        String
+  eventType     String // join, leave, message, etc.
+  participantId String?
+  timestamp     DateTime @default(now())
+  metadata      Json? // Additional event data
+
+  @@index([roomId, timestamp])
+  @@index([eventType])
+  @@map("room_activities")
+}
+
+model ConnectionLog {
+  id        String   @id @default(cuid())
+  socketId  String
+  eventType String // connect, disconnect, reconnect, etc.
+  roomId    String?
+  timestamp DateTime @default(now())
+  userAgent String?
+  ipAddress String?
+  metadata  Json?
+
+  @@index([socketId])
+  @@index([timestamp])
+  @@index([eventType])
+  @@map("connection_logs")
+}
+
+// ================================
+// TURN Server Management
+// ================================
+
+model TurnCredential {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  password  String
+  urls      String[] // TURN/STUN server URLs
+  ttl       Int      @default(86400) // 24 hours
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  isActive  Boolean  @default(true)
+
+  @@index([username])
+  @@index([expiresAt])
+  @@index([isActive])
+  @@map("turn_credentials")
+}
+
+// ================================
+// Health and Status Models
+// ================================
+
+// Note: Real-time health metrics should go to Prometheus/Grafana, not database
+// Only store critical business events and audit logs here
+
+model SystemEvent {
+  id         String    @id @default(cuid())
+  eventType  String // 'server_start', 'server_shutdown', 'config_change'
+  severity   String // 'info', 'warning', 'error', 'critical'
+  message    String
+  metadata   Json?
+  timestamp  DateTime  @default(now())
+  resolved   Boolean   @default(false)
+  resolvedAt DateTime?
+
+  @@index([eventType])
+  @@index([severity])
+  @@index([timestamp])
+  @@map("system_events")
+}
+
+// ================================
+// Enums
+// ================================
+
+enum MessageType {
+  TEXT
+  EMOJI
+  SYSTEM
+}
+
+enum ModerationStatus {
+  NONE // No moderation action
+  PENDING // Flagged, awaiting review
+  APPROVED // Reviewed and approved
+  HIDDEN // Hidden from normal view but not deleted
+  QUARANTINED // Restricted visibility
+  REMOVED // Removed by moderation
+}
+
+enum MessageActionType {
+  CREATED // Message was created
+  EDITED // Message content was edited
+  DELETED // Message was deleted (soft delete)
+  RESTORED // Deleted message was restored (admin only)
+}
+
+enum ActionByType {
+  USER // Action by regular user
+  MODERATOR // Action by moderator
+  ADMIN // Action by admin
+  SYSTEM // Automated system action
+  AUTO // Auto-moderation (AI/ML)
+}
+
+enum SystemMessageType {
+  PARTICIPANT_JOINED
+  PARTICIPANT_LEFT
+  HOST_JOINED
+  HOST_LEFT
+  HOST_CHANGED
+  ROOM_CREATED
+  ROOM_UPDATED
+}
+
+enum PeerConnectionState {
+  NEW
+  CONNECTING
+  CONNECTED
+  DISCONNECTED
+  FAILED
+  CLOSED
+}
+
+enum IceConnectionState {
+  NEW
+  CHECKING
+  CONNECTED
+  COMPLETED
+  FAILED
+  DISCONNECTED
+  CLOSED
 }

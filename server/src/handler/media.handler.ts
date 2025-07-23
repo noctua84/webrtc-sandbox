@@ -1,6 +1,6 @@
 import {Server, Socket} from "socket.io";
-import {RoomManager} from "../roomManager";
-import {type ErrorResponse, MediaStatusUpdate, type RoomUpdateEvent} from "../types";
+import {RoomManager} from "../room/manager";
+import {type ErrorResponse, MediaStatusUpdate, type RoomUpdateEvent} from "../types/webrtc.types";
 import {log} from "../logging";
 
 export const handleUpdateMediaStatus = (socket: Socket, manager: RoomManager, io: Server, data: MediaStatusUpdate, callback: (response: any) => void) => {

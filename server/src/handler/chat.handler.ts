@@ -4,7 +4,6 @@ import { Server, Socket } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
 import { log } from '../logging';
 import type {
-    ErrorResponse,
     SendMessageRequest,
     SendMessageResponse,
     EditMessageRequest,
@@ -20,8 +19,9 @@ import type {
     AddReactionResponse,
     AddReactionRequest,
     SystemMessageType
-} from '../types';
-import { RoomManager } from '../roomManager';
+} from '../types/chat.types';
+import { RoomManager } from '../room/manager';
+import {ErrorResponse} from "../types/webrtc.types";
 
 // In-memory message storage (replace with database in production)
 class MessageStorage {
