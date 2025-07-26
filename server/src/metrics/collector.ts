@@ -134,7 +134,7 @@ export class MetricsCollector {
     }
 
     // Record volatile state operations
-    recordVolatileStateOperation(operation: 'get' | 'set' | 'delete', type: 'participant' | 'room' | 'typing', latency?: number): void {
+    recordStateOperation(operation: 'get' | 'set' | 'delete', type: 'participant' | 'room' | 'typing', latency?: number): void {
         stateOperations.labels(operation, type).inc();
         if (latency !== undefined) {
             stateLatency.labels(operation).observe(latency / 1000);
@@ -149,8 +149,8 @@ export class MetricsCollector {
         }
     }
 
-    recordError(type: 'socket' | 'webrtc' | 'database' | 'validation' | 'system', severity: 'error' | 'warning' | 'critical'): void {
-        errorRate.labels(type, severity).inc();
+    recordError(type: 'socket' | 'webrtc' | 'database' | 'validation' | 'system' | 'chat' | 'room', severity: 'error' | 'warning' | 'critical', reason: string): void {
+        errorRate.labels(type, severity, reason).inc();
     }
 
     // Record request processing time
@@ -184,7 +184,7 @@ export class MetricsCollector {
 
             this.updateSystemMetrics();
         } catch (error) {
-            this.recordError('system', 'error');
+            this.recordError('system', 'error', 'Failed to update gauge metrics');
         }
     }
 

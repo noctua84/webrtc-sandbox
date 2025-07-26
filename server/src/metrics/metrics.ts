@@ -1,5 +1,5 @@
 import {Counter, Gauge, Histogram, Summary} from "prom-client";
-
+// TODO: rename the metrics name
 // ================================
 // Business Metrics
 // ================================
@@ -201,7 +201,7 @@ export const memoryUsage = new Gauge({
 export const errorRate = new Counter({
     name: 'webrtc_errors_total',
     help: 'Total errors by type',
-    labelNames: ['type', 'severity'] as const // type: 'socket', 'webrtc', 'database', 'validation'
+    labelNames: ['type', 'severity', 'reason'] as const // type: 'socket', 'webrtc', 'database', 'validation'
 });
 
 // ================================

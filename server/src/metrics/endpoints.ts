@@ -3,8 +3,9 @@
 // ================================
 
 import {register} from "prom-client";
+import {Container} from "../di";
 
-export function setupMetricsEndpoint(app: any): void {
+export function setupMetricsEndpoint(app: any, container: Container): void {
     app.get('/metrics', async (req: any, res: any) => {
         try {
             res.set('Content-Type', register.contentType);

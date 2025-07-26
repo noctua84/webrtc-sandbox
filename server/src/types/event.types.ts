@@ -51,6 +51,9 @@ export interface ServerToClientEvents {
     'chat-reaction-added': (data: AddReactionResponse) => void;
     'chat-reaction-removed': (data: RemoveReactionResponse) => void;
     'chat-system-message': (data: ChatMessage) => void; // For system messages
+
+    // Server events
+    'server-error': (error: any) => void;
 }
 
 export interface ClientToServerEvents {

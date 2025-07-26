@@ -40,6 +40,9 @@ export const configSchema = Joi.object({
     COTURN_SERVER_URL: Joi.string().required(),
     COTURN_SERVER_PORT: Joi.number().port().default(3478),
     COTURN_TLS_PORT: Joi.number().port().default(5349),
+
+    // Database configuration
+    DATABASE_URL: Joi.string().uri().required(),
 })
     .custom((value, helpers) => {
         if (value.ROOM_TIMEOUT_DURATION <= value.ROOM_PARTICIPANTS_RECONNECTION_WINDOW) {
