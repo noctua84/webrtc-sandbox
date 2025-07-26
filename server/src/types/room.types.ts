@@ -16,7 +16,7 @@ export interface Participant {
 export interface Room {
     id: string;
     creator: string;
-    participants: Map<string, Participant>;
+    participants: Participant[];
     createdAt: string;
     lastActivity: string;
     maxParticipants: number;

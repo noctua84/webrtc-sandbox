@@ -2,7 +2,6 @@
 
 import { Server, Socket } from 'socket.io';
 import { v4 as uuidv4 } from 'uuid';
-import { log } from '../logging';
 import type {
     SendMessageRequest,
     SendMessageResponse,
@@ -13,602 +12,636 @@ import type {
     TypingIndicatorRequest,
     TypingIndicatorResponse,
     ChatMessage,
-    MessageReaction,
     RemoveReactionResponse,
     RemoveReactionRequest,
     AddReactionResponse,
     AddReactionRequest,
     SystemMessageType
 } from '../types/chat.types';
-import { RoomManager } from '../room/manager';
 import {ErrorResponse} from "../types/webrtc.types";
+import {Container, createHandler} from "../di";
+import {SocketConnectionContext} from "../types/socket.types";
 
-// In-memory message storage (replace with database in production)
-class MessageStorage {
-    private messages = new Map<string, ChatMessage[]>(); // roomId -> messages[]
 
-    addMessage(message: ChatMessage): void {
-        if (!this.messages.has(message.roomId)) {
-            this.messages.set(message.roomId, []);
-        }
+export const sendMessageHandler = createHandler(
+    ['roomManager', 'logger', 'messageRepository', 'metricsCollector', 'io'],
+    (manager, logger, messageRepository, metrics, io) => (
+        socket: Socket,
+        data: SendMessageRequest,
+        callback: (response: any) => void
+    ) => {
+        const startTime = Date.now();
 
-        const roomMessages = this.messages.get(message.roomId)!;
-        roomMessages.push(message);
+        try {
+            metrics.recordSocketEvent('send-message', 'inbound');
 
-        if (roomMessages.length > 200) {
-            this.messages.set(message.roomId, roomMessages.slice(-200));
-        }
+            // Validate input
+            if (!data.roomId || !data.content || data.content.trim().length === 0) {
+                metrics.recordError('validation', 'error', 'Invalid send-message data');
+                logger.error('Invalid send-message data', { socketId: socket.id, roomId: data.roomId, content: data.content });
 
-        log('info', 'Message added to storage', {
-            roomId: message.roomId,
-            messageId: message.id,
-            totalMessages: roomMessages.length,
-            type: message.type,
-            mentionCount: message.mentions?.length || 0
-        });
-    }
-
-    getMessages(roomId: string): ChatMessage[] {
-        const messages = this.messages.get(roomId) || [];
-        log('info', 'Messages retrieved from storage', {
-            roomId,
-            messageCount: messages.length
-        });
-        return messages;
-    }
-
-    updateMessage(roomId: string, messageId: string, newContent: string): ChatMessage | null {
-        const messages = this.messages.get(roomId);
-        if (!messages) return null;
-
-        const messageIndex = messages.findIndex(m => m.id === messageId);
-        if (messageIndex === -1) return null;
-
-        const message = messages[messageIndex];
-
-        if (message === undefined || message === null) {
-            log('error', 'Message not found for update', { roomId, messageId });
-            return null;
-        }
-
-        message.content = newContent;
-        message.edited = true;
-        message.editedAt = new Date().toISOString();
-
-        return message;
-    }
-
-    // Add reaction to message
-    addReaction(roomId: string, messageId: string, emoji: string, userId: string): MessageReaction | null {
-        const messages = this.messages.get(roomId);
-        if (!messages) return null;
-
-        const message = messages.find(m => m.id === messageId);
-        if (!message) return null;
-
-        if (!message.reactions) message.reactions = [];
-
-        let reaction = message.reactions.find(r => r.emoji === emoji);
-        if (reaction) {
-            // Add user to existing reaction if not already there
-            if (!reaction.userIds.includes(userId)) {
-                reaction.userIds.push(userId);
-                reaction.count = reaction.userIds.length;
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Room ID and message content are required'
+                };
+                return callback(response);
             }
-        } else {
-            // Create new reaction
-            reaction = {
-                emoji,
-                userIds: [userId],
-                count: 1
+
+            if (data.content.trim().length > 1000) {
+                logger.error('Message too long', { socketId: socket.id, roomId: data.roomId, length: data.content.length });
+                metrics.recordError('validation', 'warning', 'Message too long');
+
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Message cannot exceed 1000 characters'
+                };
+                return callback(response);
+            }
+
+            // Validate room membership
+            const senderRoomId = manager.getRoomBySocketId(socket.id);
+            if (senderRoomId !== data.roomId) {
+                metrics.recordError('room', 'error', 'Sender not in room');
+                logger.error('Sender not in room', {
+                    socketId: socket.id,
+                    roomId: data.roomId,
+                    senderRoomId
+                });
+
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'You are not in this room'
+                };
+                return callback(response);
+            }
+
+            const room = manager.getRoomById(data.roomId);
+            if (!room) {
+                metrics.recordError('room', 'error', 'Room not found');
+                logger.error('Room not found', {
+                    socketId: socket.id,
+                    roomId: data.roomId
+                });
+
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Room not found'
+                };
+                return callback(response);
+            }
+
+            const sender = room.participants.get(socket.id);
+            if (!sender) {
+                const response: ErrorResponse = {
+                    success: false,
+                    error: 'Sender not found in room'
+                };
+                return callback(response);
+            }
+
+            // Create message with mentions
+            const message: ChatMessage = {
+                id: uuidv4(),
+                roomId: data.roomId,
+                senderId: socket.id,
+                senderName: sender.userName,
+                content: data.content.trim(),
+                timestamp: new Date().toISOString(),
+                type: data.type,
+                replyTo: data.replyTo,
+                mentions: data.mentions,
+                reactions: []
             };
-            message.reactions.push(reaction);
+
+            messageRepository.addMessage(message);
+
+            // Record metrics
+            metrics.recordChatMessage(data.type, data.content.length);
+
+            const processingTime = Date.now() - startTime;
+            metrics.recordSocketEvent('send-message', 'outbound', processingTime);
+
+            const response: SendMessageResponse = {
+                success: true,
+                message
+            };
+            callback(response);
+
+            // Broadcast message to all participants
+            io.to(data.roomId).emit('chat-message', message);
+
+        } catch (error) {
+            const err = error as Error;
+            metrics.recordError('chat', 'error', err.message);
+
+            logger.error('Error handling send-message', {
+                socketId: socket.id,
+                error: err.message,
+                stack: err.stack
+            });
+
+            const response: ErrorResponse = {
+                success: false,
+                error: 'Internal server error while sending message'
+            };
+            callback(response);
         }
-
-        return reaction;
     }
+);
 
-    // Remove reaction from message
-    removeReaction(roomId: string, messageId: string, emoji: string, userId: string): boolean {
-        const messages = this.messages.get(roomId);
-        if (!messages) return false;
+// ================================
+// EDIT MESSAGE HANDLER
+// ================================
 
-        const message = messages.find(m => m.id === messageId);
-        if (!message || !message.reactions) return false;
+export const editMessageHandler = createHandler(
+    ['logger', 'messageStorage', 'validationSchemas', 'metrics', 'roomManager', 'io'] as const,
+    (logger, messageStorage, schemas, metrics, roomManager, io) =>
+        (socket: Socket, data: EditMessageRequest, callback: (response: any) => void) => {
+            const startTime = Date.now();
 
-        const reaction = message.reactions.find(r => r.emoji === emoji);
-        if (!reaction) return false;
+            metrics.recordSocketEvent('edit-message', 'inbound');
 
-        // Remove user from reaction
-        reaction.userIds = reaction.userIds.filter(id => id !== userId);
-        reaction.count = reaction.userIds.length;
+            logger.info('Received edit-message request', {
+                socketId: socket.id,
+                roomId: data.roomId,
+                messageId: data.messageId,
+                newContentLength: data.newContent?.length
+            });
 
-        // Remove reaction if no users left
-        if (reaction.count === 0) {
-            message.reactions = message.reactions.filter(r => r.emoji !== emoji);
+            try {
+                // Validation
+                const { error, value } = schemas.editMessage.validate(data);
+                if (error) {
+                    metrics.recordError('validation', 'error');
+                    logger.error('Validation failed for edit-message', {
+                        socketId: socket.id,
+                        roomId: data.roomId,
+                        messageId: data.messageId,
+                        error: error.details.map((d: any) => d.message).join(', ')
+                    });
+
+                    const response = {
+                        success: false,
+                        error: 'Validation failed: ' + error.details.map((d: any) => d.message).join(', ')
+                    };
+                    return callback(response);
+                }
+
+                // Content validation
+                if (data.newContent.length > 1000) {
+                    metrics.recordError('validation', 'error', 'Message too long');
+                    logger.error('Edit message content too long', {
+                        socketId: socket.id,
+                        roomId: data.roomId,
+                        messageId: data.messageId,
+                        length: data.newContent.length
+                    });
+                    const response = {
+                        success: false,
+                        error: 'Message cannot exceed 1000 characters'
+                    };
+                    return callback(response);
+                }
+
+                // Room membership validation
+                const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+                if (senderRoomId !== data.roomId) {
+                    metrics.recordError('room', 'error', 'Sender not in room');
+                    logger.error('Edit attempt by participant not in room', {
+                        socketId: socket.id,
+                        roomId: data.roomId,
+                        senderRoomId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'You are not in this room'
+                    };
+                    return callback(response);
+                }
+
+                // Update message
+                const updatedMessage = messageStorage.updateMessage(data.roomId, data.messageId, data.newContent);
+                if (!updatedMessage) {
+                    metrics.recordError('chat', 'error', 'Message not found or cannot be edited');
+                    logger.error('Edit attempt for non-existent message', {
+                        socketId: socket.id,
+                        messageId: data.messageId,
+                        roomId: data.roomId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'Message not found or cannot be edited'
+                    };
+                    return callback(response);
+                }
+
+                // Verify ownership
+                if (updatedMessage.senderId !== socket.id) {
+                    metrics.recordError('chat', 'error', 'Edit attempt by non-owner');
+                    logger.error('Edit attempt by non-owner', {
+                        socketId: socket.id,
+                        messageId: data.messageId,
+                        roomId: data.roomId,
+                        senderId: updatedMessage.senderId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'You can only edit your own messages'
+                    };
+                    return callback(response);
+                }
+
+                // Record metrics
+                metrics.recordChatMessage('text', data.newContent.length, 'edit'); // Record as edit
+
+                const processingTime = Date.now() - startTime;
+                metrics.recordSocketEvent('edit-message', 'outbound', processingTime);
+
+                const response: EditMessageResponse = {
+                    success: true,
+                    message: updatedMessage
+                };
+                callback(response);
+
+                // Broadcast edit to all participants
+                io.to(data.roomId).emit('chat-message-edited', updatedMessage);
+
+            } catch (error) {
+                const err = error as Error;
+                metrics.recordError('chat', 'error');
+
+                logger.error('Error handling edit-message', {
+                    socketId: socket.id,
+                    error: err.message,
+                    stack: err.stack
+                });
+
+                const response = {
+                    success: false,
+                    error: 'Internal server error while editing message'
+                };
+                callback(response);
+            }
         }
+);
 
-        return true;
-    }
+// ================================
+// DELETE MESSAGE HANDLER
+// ================================
 
-    deleteMessage(roomId: string, messageId: string): boolean {
-        const messages = this.messages.get(roomId);
-        if (!messages) return false;
+export const deleteMessageHandler = createHandler(
+    ['logger', 'messageStorage', 'validationSchemas', 'metrics', 'roomManager', 'io'] as const,
+    (logger, messageStorage, schemas, metrics, roomManager, io) =>
+        (socket: Socket, data: DeleteMessageRequest, callback: (response: any) => void) => {
+            const startTime = Date.now();
 
-        const messageIndex = messages.findIndex(m => m.id === messageId);
-        if (messageIndex === -1) return false;
+            metrics.recordSocketEvent('delete-message', 'inbound');
 
-        messages.splice(messageIndex, 1);
-        return true;
-    }
+            try {
+                const { roomId, messageId } = data;
 
-    clearRoomMessages(roomId: string): void {
-        this.messages.delete(roomId);
-    }
+                // Validation
+                const { error, value } = schemas.deleteMessage.validate(data);
+                if (error) {
+                    metrics.recordError('validation', 'error', 'Invalid delete-message data');
+                    logger.error('Validation failed for delete-message', {
+                        socketId: socket.id,
+                        roomId: data.roomId,
+                        messageId: data.messageId,
+                        error: error.details.map((d: any) => d.message).join(', ')
+                    });
+                    const response = {
+                        success: false,
+                        error: 'Validation failed: ' + error.details.map((d: any) => d.message).join(', ')
+                    };
+                    return callback(response);
+                }
+
+                // Room membership validation
+                const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+                if (senderRoomId !== roomId) {
+                    metrics.recordError('room', 'error', 'Sender not in room');
+                    logger.error('Delete attempt by participant not in room', {
+                        socketId: socket.id,
+                        roomId: roomId,
+                        senderRoomId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'You are not in this room'
+                    };
+                    return callback(response);
+                }
+
+                // Get message to verify ownership/permissions
+                const messages = messageStorage.getMessages(roomId);
+                const message = messages.find((m: ChatMessage) => m.id === messageId);
+
+                // TODO: add message.deleted flag in this context as well.
+                if (!message) {
+                    metrics.recordError('chat', 'error', 'Message not found');
+                    logger.error('Delete attempt for non-existent message', {
+                        socketId: socket.id,
+                        messageId: messageId,
+                        roomId: roomId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'Message not found'
+                    };
+                    return callback(response);
+                }
+
+                // Verify permissions (own message or room creator)
+                const room = roomManager.getRoomById(roomId);
+                const participant = room?.participants.get(socket.id);
+                const canDelete = message.senderId === socket.id || participant?.isCreator === true;
+
+                if (!canDelete) {
+                    metrics.recordError('chat', 'error', 'Delete attempt by non-owner');
+                    logger.error('Delete attempt by non-owner', {
+                        socketId: socket.id,
+                        messageId: messageId,
+                        roomId: roomId,
+                        senderId: message.senderId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'You can only delete your own messages'
+                    };
+                    return callback(response);
+                }
+
+                // Delete message
+                const deleted = messageStorage.deleteMessage(roomId, messageId);
+                if (!deleted) {
+                    metrics.recordError('chat', 'error', 'Failed to delete message');
+                    logger.error('Failed to delete message', {
+                        socketId: socket.id,
+                        messageId: messageId,
+                        roomId: roomId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'Failed to delete message'
+                    };
+                    return callback(response);
+                }
+
+                // Record metrics
+                const processingTime = Date.now() - startTime;
+                metrics.recordSocketEvent('delete-message', 'outbound', processingTime);
+
+                const response: DeleteMessageResponse = {
+                    success: true,
+                    messageId
+                };
+                callback(response);
+
+                // Broadcast deletion to all participants
+                io.to(roomId).emit('chat-message-deleted', { roomId, messageId });
+
+            } catch (error: any) {
+                const err = error as Error;
+                metrics.recordError('chat', 'error', err.message);
+
+                logger.error('Error handling delete-message', {
+                    socketId: socket.id,
+                    error: err.message,
+                    stack: err.stack
+                });
+
+                const response = {
+                    success: false,
+                    error: 'Internal server error while deleting message'
+                };
+
+                callback(response);
+            }
+        }
+);
+
+// ================================
+// TYPING INDICATOR HANDLER
+// ================================
+
+export const typingIndicatorHandler = createHandler(
+    ['logger', 'validationSchemas', 'metrics', 'roomManager', 'io'] as const,
+    (logger, schemas, metrics, roomManager, io) =>
+        (socket: Socket, data: TypingIndicatorRequest, callback: (response: any) => void) => {
+            // Don't record socket events for typing - too noisy
+            // But do record typing metrics
+            metrics.recordTypingIndicator(data.isTyping ? 'start' : 'stop');
+
+            try {
+                const { roomId, isTyping } = data;
+
+                // Validation
+                const { error, value } = schemas.typingIndicator.validate(data);
+                if (error) {
+                    metrics.recordError('validation', 'error', 'Invalid typing indicator data');
+                    const response = {
+                        success: false,
+                        error: 'Validation failed: ' + error.details.map((d: any) => d.message).join(', ')
+                    };
+                    return callback(response);
+                }
+
+                // Room membership validation
+                const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+                if (senderRoomId !== roomId) {
+                    metrics.recordError('room', 'warning');
+                    const response = {
+                        success: false,
+                        error: 'You are not in this room'
+                    };
+                    return callback(response);
+                }
+
+                // Get sender info
+                const room = roomManager.getRoomById(roomId);
+                const sender = room?.participants.get(socket.id);
+
+                if (!sender) {
+                    metrics.recordError('room', 'error');
+                    const response = {
+                        success: false,
+                        error: 'Sender not found in room'
+                    };
+                    return callback(response);
+                }
+
+                const response: TypingIndicatorResponse = {
+                    success: true
+                };
+                callback(response);
+
+                // Broadcast typing indicator to other participants (not sender)
+                socket.to(roomId).emit('chat-typing', {
+                    roomId,
+                    userId: socket.id,
+                    userName: sender.userName,
+                    isTyping
+                });
+
+                // Only log start typing to avoid spam
+                if (isTyping) {
+                    logger.info('Typing indicator started', {
+                        roomId,
+                        userId: socket.id,
+                        userName: sender.userName
+                    });
+                }
+
+            } catch (error) {
+                const err = error as Error;
+                metrics.recordError('chat', 'error');
+
+                logger.error('Error handling typing indicator', {
+                    socketId: socket.id,
+                    error: err.message
+                });
+
+                const response = {
+                    success: false,
+                    error: 'Internal server error while handling typing indicator'
+                };
+                callback(response);
+            }
+        }
+);
+
+// ================================
+// GET CHAT HISTORY HANDLER
+// ================================
+
+export const getChatHistoryHandler = createHandler(
+    ['logger', 'messageRepository', 'metrics', 'roomManager'] as const,
+    (logger, messageRepository, metrics, roomManager) =>
+        (socket: Socket, data: { roomId: string }, callback: (response: any) => void) => {
+            const startTime = Date.now();
+
+            metrics.recordSocketEvent('get-chat-history', 'inbound');
+
+            logger.info('Received get-chat-history request', {
+                socketId: socket.id,
+                roomId: data.roomId
+            });
+
+            try {
+                const { roomId } = data;
+
+                if (!roomId) {
+                    metrics.recordError('validation', 'error', 'Room ID is required');
+                    logger.error('Get chat history request without room ID', {
+                        socketId: socket.id
+                    });
+                    const response = {
+                        success: false,
+                        error: 'Room ID is required'
+                    };
+                    return callback(response);
+                }
+
+                // Validate room membership
+                const requesterRoomId = roomManager.getRoomBySocketId(socket.id);
+                if (requesterRoomId !== roomId) {
+                    metrics.recordError('room', 'error', 'Requester not in room');
+                    logger.error('Get chat history request by participant not in room', {
+                        socketId: socket.id,
+                        roomId: roomId,
+                        requesterRoomId
+                    });
+                    const response = {
+                        success: false,
+                        error: 'You are not in this room'
+                    };
+                    return callback(response);
+                }
+
+                // Get chat history
+                const messages = messageRepository.getMessages(roomId);
+
+                const processingTime = Date.now() - startTime;
+                metrics.recordSocketEvent('get-chat-history', 'outbound', processingTime);
+
+                const response = {
+                    success: true,
+                    messages: messages || []
+                };
+                callback(response);
+
+                // Also emit the chat-history event as backup
+                socket.emit('chat-history', {
+                    roomId,
+                    messages: messages || []
+                });
+
+            } catch (error: any) {
+                const err = error as Error;
+                metrics.recordError('chat', 'error', err.message);
+
+                logger.error('Error getting chat history', {
+                    error: err.message,
+                    stack: err.stack,
+                    socketId: socket.id
+                });
+
+                const response = {
+                    success: false,
+                    error: 'Internal server error while getting chat history'
+                };
+                callback(response);
+            }
+        }
+);
+
+// ================================
+// HANDLER REGISTRATION FUNCTION
+// ================================
+
+export function registerChatHandlers(container: Container, context: SocketConnectionContext) {
+    const logger = container.get<'logger'>('logger'); // Use any to avoid strict typing issues
+
+    logger.info('Registering chat handlers', { socketId: context.connectionId });
+
+    // Convert handlers to actual functions using the container
+    const sendMessage = sendMessageHandler(container);
+    const editMessage = editMessageHandler(container);
+    const deleteMessage = deleteMessageHandler(container);
+    const typingIndicator = typingIndicatorHandler(container);
+    const getChatHistory = getChatHistoryHandler(container);
+
+    // Register socket event listeners
+    context.socket.on('send-message', sendMessage);
+    context.socket.on('edit-message', editMessage);
+    context.socket.on('delete-message', deleteMessage);
+    context.socket.on('typing-indicator', typingIndicator);
+    context.socket.on('get-chat-history', getChatHistory);
+
+    logger.success('Chat handlers registered successfully', {
+        socketId: context.connectionId,
+        handlers: [
+            'send-message',
+            'edit-message',
+            'delete-message',
+            'typing-indicator',
+            'get-chat-history'
+        ]
+    });
+
+    // Return handlers for testing or cleanup
+    return {
+        sendMessage,
+        editMessage,
+        deleteMessage,
+        typingIndicator,
+        getChatHistory
+    };
 }
 
-const messageStorage = new MessageStorage();
 
-export const handleSendMessage = (
-    socket: Socket,
-    manager: RoomManager,
-    io: Server,
-    data: SendMessageRequest,
-    callback: (response: any) => void
-) => {
-    log('info', 'Received send-message request', {
-        socketId: socket.id,
-        roomId: data.roomId,
-        contentLength: data.content?.length,
-        type: data.type,
-        mentionCount: data.mentions?.length || 0
-    });
-
-    try {
-        const { roomId, content, type = 'text', replyTo, mentions = [] } = data;
-
-        // Validate input
-        if (!roomId || !content || content.trim().length === 0) {
-            log('error', 'Invalid send-message data', { socketId: socket.id, roomId, content });
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Room ID and message content are required'
-            };
-            return callback(response);
-        }
-
-        if (content.trim().length > 1000) {
-            log('error', 'Message too long', { socketId: socket.id, roomId, length: content.length });
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Message cannot exceed 1000 characters'
-            };
-            return callback(response);
-        }
-
-        // Validate room membership
-        const senderRoomId = manager.getRoomBySocketId(socket.id);
-        if (senderRoomId !== roomId) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'You are not in this room'
-            };
-            return callback(response);
-        }
-
-        const room = manager.getRoomById(roomId);
-        if (!room) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Room not found'
-            };
-            return callback(response);
-        }
-
-        const sender = room.participants.get(socket.id);
-        if (!sender) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Sender not found in room'
-            };
-            return callback(response);
-        }
-
-        // Create message with mentions
-        const message: ChatMessage = {
-            id: uuidv4(),
-            roomId,
-            senderId: socket.id,
-            senderName: sender.userName,
-            content: content.trim(),
-            timestamp: new Date().toISOString(),
-            type,
-            replyTo,
-            mentions,
-            reactions: []
-        };
-
-        messageStorage.addMessage(message);
-
-        log('success', 'Message created and stored', {
-            messageId: message.id,
-            roomId,
-            sender: message.senderName,
-            type: message.type,
-            mentionCount: mentions.length
-        });
-
-        const response: SendMessageResponse = {
-            success: true,
-            message
-        };
-        callback(response);
-
-        // Broadcast message to all participants
-        io.to(roomId).emit('chat-message', message);
-
-        log('success', 'Message broadcasted to room', {
-            messageId: message.id,
-            roomId,
-            participantCount: room.participants.size
-        });
-
-    } catch (error) {
-        const err = error as Error;
-        log('error', 'Error handling send-message', {
-            socketId: socket.id,
-            error: err.message,
-            stack: err.stack
-        });
-
-        const response: ErrorResponse = {
-            success: false,
-            error: 'Internal server error while sending message'
-        };
-        callback(response);
-    }
-};
-
-export const handleEditMessage = (
-    socket: Socket,
-    manager: RoomManager,
-    io: Server,
-    data: EditMessageRequest,
-    callback: (response: any) => void
-) => {
-    log('info', 'Received edit-message request', {
-        socketId: socket.id,
-        roomId: data.roomId,
-        messageId: data.messageId
-    });
-
-    try {
-        const { roomId, messageId, newContent } = data;
-
-        // Validate input
-        if (!roomId || !messageId || !newContent || newContent.trim().length === 0) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Room ID, message ID, and new content are required'
-            };
-            return callback(response);
-        }
-
-        // Validate that sender is in the room
-        const senderRoomId = manager.getRoomBySocketId(socket.id);
-        if (senderRoomId !== roomId) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'You are not in this room'
-            };
-            return callback(response);
-        }
-
-        // Get original messages to verify ownership
-        const messages = messageStorage.getMessages(roomId);
-        const originalMessage = messages.find(m => m.id === messageId);
-
-        if (!originalMessage) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Message not found'
-            };
-            return callback(response);
-        }
-
-        // Verify message ownership
-        if (originalMessage.senderId !== socket.id) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'You can only edit your own messages'
-            };
-            return callback(response);
-        }
-
-        // Update message
-        const updatedMessage = messageStorage.updateMessage(roomId, messageId, newContent.trim());
-        if (!updatedMessage) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Failed to update message'
-            };
-            return callback(response);
-        }
-
-        log('success', 'Message edited successfully', {
-            messageId,
-            roomId,
-            senderId: socket.id
-        });
-
-        // Send response
-        const response: EditMessageResponse = {
-            success: true,
-            message: updatedMessage
-        };
-        callback(response);
-
-        // Broadcast edit to all participants
-        io.to(roomId).emit('chat-message-edited', updatedMessage);
-
-    } catch (error) {
-        const err = error as Error;
-        log('error', 'Error handling edit-message', {
-            socketId: socket.id,
-            error: err.message,
-            stack: err.stack
-        });
-
-        const response: ErrorResponse = {
-            success: false,
-            error: 'Internal server error while editing message'
-        };
-        callback(response);
-    }
-};
-
-export const handleDeleteMessage = (
-    socket: Socket,
-    manager: RoomManager,
-    io: Server,
-    data: DeleteMessageRequest,
-    callback: (response: any) => void
-) => {
-    log('info', 'Received delete-message request', {
-        socketId: socket.id,
-        roomId: data.roomId,
-        messageId: data.messageId
-    });
-
-    try {
-        const { roomId, messageId } = data;
-
-        // Validate input
-        if (!roomId || !messageId) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Room ID and message ID are required'
-            };
-            return callback(response);
-        }
-
-        // Validate that sender is in the room
-        const senderRoomId = manager.getRoomBySocketId(socket.id);
-        if (senderRoomId !== roomId) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'You are not in this room'
-            };
-            return callback(response);
-        }
-
-        // Get message to verify ownership
-        const messages = messageStorage.getMessages(roomId);
-        const message = messages.find(m => m.id === messageId);
-
-        if (!message) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Message not found'
-            };
-            return callback(response);
-        }
-
-        // Verify ownership (or room creator can delete any message)
-        const room = manager.getRoomById(roomId);
-        const participant = room?.participants.get(socket.id);
-        const canDelete = message.senderId === socket.id || participant?.isCreator === true;
-
-        if (!canDelete) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'You can only delete your own messages'
-            };
-            return callback(response);
-        }
-
-        // Delete message
-        const deleted = messageStorage.deleteMessage(roomId, messageId);
-        if (!deleted) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Failed to delete message'
-            };
-            return callback(response);
-        }
-
-        log('success', 'Message deleted successfully', {
-            messageId,
-            roomId,
-            deletedBy: socket.id
-        });
-
-        // Send response
-        const response: DeleteMessageResponse = {
-            success: true,
-            messageId
-        };
-        callback(response);
-
-        // Broadcast deletion to all participants
-        io.to(roomId).emit('chat-message-deleted', { roomId, messageId });
-
-    } catch (error) {
-        const err = error as Error;
-        log('error', 'Error handling delete-message', {
-            socketId: socket.id,
-            error: err.message,
-            stack: err.stack
-        });
-
-        const response: ErrorResponse = {
-            success: false,
-            error: 'Internal server error while deleting message'
-        };
-        callback(response);
-    }
-};
-
-export const handleTypingIndicator = (
-    socket: Socket,
-    manager: RoomManager,
-    io: Server,
-    data: TypingIndicatorRequest,
-    callback: (response: any) => void
-) => {
-    try {
-        const { roomId, isTyping } = data;
-
-        // Validate that sender is in the room
-        const senderRoomId = manager.getRoomBySocketId(socket.id);
-        if (senderRoomId !== roomId) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'You are not in this room'
-            };
-            return callback(response);
-        }
-
-        // Get sender info
-        const room = manager.getRoomById(roomId);
-        const sender = room?.participants.get(socket.id);
-
-        if (!sender) {
-            const response: ErrorResponse = {
-                success: false,
-                error: 'Sender not found in room'
-            };
-            return callback(response);
-        }
-
-        // Send response
-        const response: TypingIndicatorResponse = {
-            success: true
-        };
-        callback(response);
-
-        // Broadcast typing indicator to other participants (not sender)
-        socket.to(roomId).emit('chat-typing', {
-            roomId,
-            userId: socket.id,
-            userName: sender.userName,
-            isTyping
-        });
-
-    } catch (error) {
-        const err = error as Error;
-        log('error', 'Error handling typing indicator', {
-            socketId: socket.id,
-            error: err.message
-        });
-
-        const response: ErrorResponse = {
-            success: false,
-            error: 'Internal server error while handling typing indicator'
-        };
-        callback(response);
-    }
-};
-
-export const handleGetChatHistory = (
-    socket: Socket,
-    manager: RoomManager,
-    data: { roomId: string },
-    callback: (response: any) => void
-) => {
-    log('info', 'Received get-chat-history request', {
-        socketId: socket.id,
-        roomId: data.roomId
-    });
-
-    try {
-        const { roomId } = data;
-
-        // Validate input
-        if (!roomId) {
-            log('error', 'Missing roomId in get-chat-history request', { socketId: socket.id });
-            const response = {
-                success: false,
-                error: 'Room ID is required'
-            };
-            return callback(response);
-        }
-
-        // Validate that requester is in the room
-        const requesterRoomId = manager.getRoomBySocketId(socket.id);
-        if (requesterRoomId !== roomId) {
-            log('error', 'Chat history request from participant not in room', {
-                socketId: socket.id,
-                requesterRoomId,
-                requestedRoomId: roomId
-            });
-            const response = {
-                success: false,
-                error: 'You are not in this room'
-            };
-            return callback(response);
-        }
-
-        // Get chat history
-        const messages = messageStorage.getMessages(roomId);
-
-        log('success', 'Chat history retrieved successfully', {
-            roomId,
-            messageCount: messages.length,
-            requestedBy: socket.id
-        });
-
-        // Send response with proper structure
-        const response = {
-            success: true,
-            messages: messages || [] // Ensure messages is always an array
-        };
-
-        callback(response);
-
-        // ALSO emit the chat-history event as backup
-        // (in case the client is still listening for events)
-        socket.emit('chat-history', {
-            roomId,
-            messages: messages || []
-        });
-
-    } catch (error) {
-        const err = error as Error;
-        log('error', 'Error handling get-chat-history', {
-            socketId: socket.id,
-            error: err.message,
-            stack: err.stack
-        });
-
-        const response = {
-            success: false,
-            error: 'Internal server error while retrieving chat history'
-        };
-        callback(response);
-    }
-};
-
+/**
 // Add reaction handler
 export const handleAddReaction = (
     socket: Socket,
@@ -826,3 +859,4 @@ export const cleanupRoomMessages = (roomId: string): void => {
     log('info', 'Cleaning up messages for deleted room', { roomId });
     messageStorage.clearRoomMessages(roomId);
 };
+ */

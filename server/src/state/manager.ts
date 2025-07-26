@@ -326,7 +326,7 @@ export class StateManager {
 
     async disconnect(): Promise<void> {
         if (this.redis) {
-            await this.redis.disconnect();
+            this.redis.disconnect();
         }
         this.localCache.clear();
     }

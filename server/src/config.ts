@@ -9,8 +9,6 @@ import {configSchema} from "./validation/config.shema";
 // Load environment variables from .env file
 dotenv.config();
 
-dotenv.config();
-
 // Validate and get typed configuration
 const { error, value: config } = configSchema.validate(process.env, {
     abortEarly: false,
@@ -71,6 +69,10 @@ export const getConfig = () => {
             url: config.COTURN_SERVER_URL,
             port: config.COTURN_SERVER_PORT,
             tlsPort: config.COTURN_TLS_PORT
+        },
+
+        db: {
+            url: config.DATABASE_URL,
         }
     };
 };

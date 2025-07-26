@@ -30,7 +30,7 @@ export interface ChatMessage {
     senderName: string;
     content: string;
     timestamp: string;
-    type: 'text' | 'system' | 'emoji' | 'file';
+    type: 'text' | 'system' | 'emoji' | undefined;
     edited?: boolean | undefined;
     editedAt?: string | undefined;
     replyTo?: string | undefined;

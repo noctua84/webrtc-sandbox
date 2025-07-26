@@ -385,25 +385,6 @@ export class RoomManager {
         }
     }
 
-    // Lifecycle Management
-    shutdown(): void {
-        if (this.cleanupInterval) {
-            clearInterval(this.cleanupInterval);
-            this.cleanupInterval = null;
-        }
-
-        log('info',`RoomManager shutting down`, {
-            remainingRooms: this.rooms.size,
-            remainingTokens: this.reconnectionTokenToParticipant.size
-        });
-
-        // Clean up all data
-        this.rooms.clear();
-        this.socketToRoom.clear();
-        this.socketToReconnectionToken.clear();
-        this.reconnectionTokenToParticipant.clear();
-    }
-
     // private methods
     private generateReconnectionToken(): string {
         return uuidv4();

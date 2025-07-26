@@ -1,66 +1,34 @@
-import express, { Request, Response } from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import cors from 'cors';
-import type {
-    HealthStatus,
-    RoomsInfo,
-    WebRTCOffer,
-    WebRTCAnswer,
-    WebRTCIceCandidate,
-    MediaStatusUpdate
-} from './types/webrtc.types.js';
-import {RoomManager} from "./room/manager";
-import {
-    handleCreateRoom,
-    handleGetRoomInfo,
-    handleJoinRoom,
-    handleLeaveRoom,
-    handleReconnectRoom
-} from "./handler/room.handler";
-import {handleWebRTCAnswer, handleWebRTCIceCandidate, handleWebRTCOffer} from "./handler/webrtc.handler";
-import {handleUpdateMediaStatus} from "./handler/media.handler";
-import {handleDisconnect} from "./handler/connection.handler";
-import {log} from "./logging";
-import {getConfig} from "./config";
-import {
-    handleAddReaction,
-    handleDeleteMessage,
-    handleEditMessage,
-    handleGetChatHistory, handleRemoveReaction,
-    handleSendMessage,
-    handleTypingIndicator
-} from "./handler/chat.handler";
+import express from "express";
+import { createServer } from "http";
+import {createAppContainer} from "./di";
+import {Server} from "socket.io";
+import cors from "cors";
 import helmet from "helmet";
-import { ErrorResponse, CreateRoomResponse, JoinRoomResponse, ReconnectRoomResponse, GetRoomInfoResponse, LeaveRoomResponse} from './types/webrtc.types.js';
-import { DeleteMessageRequest, EditMessageRequest, SendMessageRequest, TypingIndicatorRequest} from './types/chat.types.js';
-import {
-    CreateRoomRequest,
-    GetRoomInfoRequest,
-    JoinRoomRequest,
-    LeaveRoomRequest,
-    ReconnectRoomRequest,
-    Room
-} from "./types/room.types";
 import {ClientToServerEvents, ServerToClientEvents} from "./types/event.types";
+import {setupMetricsEndpoint} from "./metrics/endpoints";
+import {registerChatHandlers} from "./handler/chat.handler";
+import {SocketConnectionContext} from "./types/socket.types";
+
+let isShuttingDown = false;
+let prismaInstance: any;
+
+const container = createAppContainer()
+
+console.log(container)
+
+const cfg = container.get<'config'>('config')
+const logger = container.get<'logger'>('logger')
+const metrics = container.get<'metrics'>('metrics')
 
 const app = express();
-const server = createServer(app);
-const cfg = getConfig()
-
-// Configure CORS for Socket.IO
-const io = new Server<
-    ClientToServerEvents,
-    ServerToClientEvents
->(server, {
+const server = createServer(app)
+const io = new Server<ClientToServerEvents, ServerToClientEvents>(server, {
     cors: {
         origin: cfg.server.cors.origin,
         methods: cfg.server.cors.methods,
         credentials: cfg.server.cors.credentials,
     }
-});
-
-const manager = new RoomManager();
+})
 
 // Middleware
 app.use(cors({
@@ -71,253 +39,193 @@ app.use(cors({
 app.use(helmet());
 app.use(express.json());
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-    log('info', `New socket connection established`, {socketId: socket.id});
+try {
+    // Initialize Prisma client
+    prismaInstance = container.get('prisma');
+} catch (error) {
+    logger.warning('Prisma client not available during startup', { error });
+}
 
-    // Handle room creation
-    socket.on('create-room', (data: CreateRoomRequest, callback: (arg0: ErrorResponse | CreateRoomResponse) => void) => {
-        log('info', `Socket requested to create room`, {socketId: socket.id, userName: data.userName});
-        handleCreateRoom(socket, manager, data, callback)
-    });
+// API routes:
+setupMetricsEndpoint(app, container);
 
-    // Handle joining existing room
-    socket.on('join-room', (data: JoinRoomRequest, callback: (arg0: ErrorResponse | JoinRoomResponse) => void) => {
-        log('info', `Socket requested to join room`, {socketId: socket.id, roomId: data.roomId});
-        handleJoinRoom(socket, manager, data, callback)
-    });
+io.on('connection', socket => {
+    logger.info(`New socket connection: ${socket.id}`);
 
-    // Handle explicit reconnection
-    socket.on('reconnect-room', (data: ReconnectRoomRequest, callback: (arg0: ErrorResponse | ReconnectRoomResponse) => void) => {
-        log('info', `Socket requested to reconnect to room`, {socketId: socket.id, roomId: data.roomId});
-        handleReconnectRoom(socket, manager, data, callback)
-    });
+    metrics.recordSocketConnection(true)
 
-    // Handle getting room info
-    socket.on('get-room-info', (data: GetRoomInfoRequest, callback: (arg0: ErrorResponse | GetRoomInfoResponse) => void) => {
-        log('info', `Socket requested room info`, {socketId: socket.id, roomId: data.roomId});
-        handleGetRoomInfo(socket, manager, data, callback);
-    });
+    const context: SocketConnectionContext = {
+        socket,
+        io,
+        connectionTime: new Date(),
+        connectionId: socket.id,
+    }
 
-    // Handle leaving room explicitly
-    socket.on('leave-room', (data: LeaveRoomRequest, callback: (arg0: ErrorResponse | LeaveRoomResponse) => void) => {
-        log('info', `Socket requested to leave room`, {socketId: socket.id, roomId: data.roomId});
-        handleLeaveRoom(socket, manager, data, callback);
-    });
+    // ================================
+    // REGISTER ALL HANDLERS
+    // ================================
 
-    // WebRTC Signaling Event Handlers
-    // Handle WebRTC offer
-    socket.on('webrtc-offer', (data: WebRTCOffer, callback: ((response: any) => void) | undefined) => {
-        log('info', `Received WebRTC offer`, {
+    try {
+        // Register chat handlers with full DI support
+        const chatHandlers = registerChatHandlers(container, context);
+
+        // TODO: Register other handlers when ready
+        // const roomHandlers = registerRoomHandlers(socketContainer, socket);
+        // const webrtcHandlers = registerWebRTCHandlers(socketContainer, socket);
+
+        logger.success('All socket handlers registered', {
             socketId: socket.id,
-            roomId: data.roomId,
-            targetParticipantId: data.targetParticipantId
+            chatHandlers: Object.keys(chatHandlers),
+            // roomHandlers: Object.keys(roomHandlers),
+            // webrtcHandlers: Object.keys(webrtcHandlers)
         });
-        handleWebRTCOffer(socket, manager, io, data, callback);
-    });
 
-    // Handle WebRTC answer
-    socket.on('webrtc-answer', (data: WebRTCAnswer, callback: ((response: any) => void) | undefined) => {
-        log('info', `Received WebRTC answer`, {
+    } catch (error) {
+        const err = error as Error;
+        metrics.recordError('socket', 'error', 'Error registering socket handlers');
+        logger.error('Error registering socket handlers', {
             socketId: socket.id,
-            roomId: data.roomId,
-            targetParticipantId: data.targetParticipantId
+            error: err.message,
+            stack: err.stack
         });
-        handleWebRTCAnswer(socket, manager, io, data, callback);
-    });
 
-    // Handle WebRTC ICE candidate
-    socket.on('webrtc-ice-candidate', (data: WebRTCIceCandidate, callback: ((response: any) => void) | undefined) => {
-        log('info', `Received WebRTC ICE candidate`, {
-            socketId: socket.id,
-            roomId: data.roomId,
-            targetParticipantId: data.targetParticipantId
+        // Disconnect problematic socket
+        socket.emit('server-error', {
+            message: 'Failed to initialize connection',
+            shouldReconnect: true
         });
-        handleWebRTCIceCandidate(socket, manager, io, data, callback);
-    });
+        socket.disconnect();
+        return;
+    }
 
-    // Handle media status updates
-    socket.on('update-media-status', (data: MediaStatusUpdate, callback: (response: any) => void) => {
-        log('info', `Received media status update`, {
-            socketId: socket.id,
-            roomId: data.roomId,
-            mediaStatus: {
-                hasVideo: data.hasVideo,
-                hasAudio: data.hasAudio,
-                isScreenSharing: data.isScreenSharing
-            }
-        });
-        handleUpdateMediaStatus(socket, manager, io, data, callback);
-    });
+    // ================================
+    // CONNECTION EVENT HANDLERS
+    // ================================
 
-    // Handle disconnect (not explicit leave)
     socket.on('disconnect', (reason) => {
-        log('info', `Socket disconnected`, {socketId: socket.id, reason});
-        handleDisconnect(socket, manager, io, reason);
-    });
+        const sessionDuration = Date.now() - context.connectionTime.getTime();
 
-    // Handle generic errors
-    socket.on('error' as any, (error: Error) => {
-        log('error', `Socket error`, {socketId: socket.id, error: error.message});
-    });
-
-    // Handle chat messages
-    socket.on('send-message', (data: SendMessageRequest, callback: (response: any) => void) => {
-        handleSendMessage(socket, manager, io, data, callback);
-    });
-
-    socket.on('edit-message', (data: EditMessageRequest, callback: (response: any) => void) => {
-        handleEditMessage(socket, manager, io, data, callback);
-    });
-
-    socket.on('delete-message', (data: DeleteMessageRequest, callback: (response: any) => void) => {
-        handleDeleteMessage(socket, manager, io, data, callback);
-    });
-
-    socket.on('typing-indicator', (data: TypingIndicatorRequest, callback: (response: any) => void) => {
-        handleTypingIndicator(socket, manager, io, data, callback);
-    });
-
-    socket.on('get-chat-history', (data: { roomId: string; }, callback: (response: any) => void) => {
-        handleGetChatHistory(socket, manager, data, callback);
-    });
-
-    socket.on('add-reaction', (data: { roomId: any; messageId: any; emoji: any; }, callback: (response: any) => void) => {
-        log('info', `Received chat reaction added`, {
+        logger.info('Socket disconnecting', {
             socketId: socket.id,
-            roomId: data.roomId,
-            messageId: data.messageId,
-            emoji: data.emoji
+            reason,
+            sessionDuration
         });
-        // Handle chat reaction added logic here
-        handleAddReaction(socket, manager, io, data, callback);
-    })
 
-    socket.on('remove-reaction', (data: { roomId: any; messageId: any; emoji: any; userId: string; }, callback: (response: any) => void) => {
-        log('info', `Received chat reaction removed`, {
+        // Record disconnection metrics
+        metrics.recordSocketConnection(false);
+
+        // Clean up room membership if needed
+        try {
+            const roomManager = container.get<'roomManager'>('roomManager');
+            const roomId = roomManager.getRoomBySocketId(socket.id);
+
+            if (roomId) {
+                const result = roomManager.removeParticipantFromRoom(socket.id, false);
+
+                if (result?.room) {
+                    // Record participant leave
+                    metrics.recordParticipantLeave('disconnect', sessionDuration);
+
+                    // Broadcast room update
+                    io.to(roomId).emit('room-updated', {
+                        roomId,
+                        participants: result.room.participants,
+                        event: 'participant-disconnected',
+                        leftParticipantId: socket.id
+                    });
+
+                    // Clean up chat history if room is empty
+                    if (result.room.participants.length === 0) {
+                        const messageRepository = container.get<'messageRepository'>('messageRepository');
+                        messageRepository.clearRoomMessages(roomId);
+
+                        logger.info('Cleaned up empty room chat history', {
+                            roomId,
+                            lastParticipant: socket.id
+                        });
+                    }
+
+                    logger.info('Participant removed from room', {
+                        socketId: socket.id,
+                        roomId,
+                        remainingParticipants: result.room.participants.length
+                    });
+                }
+            }
+        } catch (error) {
+            const err = error as Error;
+            metrics.recordError('room', 'error', 'Error during disconnect cleanup');
+            logger.error('Error during disconnect cleanup', {
+                error: err.message,
+                socketId: socket.id
+            });
+        }
+
+        // Scoped container is automatically garbage collected
+    });
+
+    socket.on('error', (error) => {
+        metrics.recordError('socket', 'error', 'Socket error');
+        logger.error('Socket error occurred', {
             socketId: socket.id,
-            roomId: data.roomId,
-            messageId: data.messageId,
-            emoji: data.emoji
+            error: error.message
         });
-        handleRemoveReaction(socket, manager, io, data, callback);
-    });
-});
-
-// Health check endpoint
-app.get('/health', (req: Request, res: Response) => {
-    const rooms = manager.getRooms();
-    const activeRooms = Array.from(rooms.values()).filter((room: any) => room.isActive);
-    const connectedParticipants = Array.from(rooms.values())
-        .flatMap((room: any) => Array.from(room.participants.values()))
-        .filter((participant: any) => participant.isConnected);
-
-    const health: HealthStatus = {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime(),
-        rooms: rooms.size,
-        activeRooms: activeRooms.length,
-        totalParticipants: Array.from(rooms.values()).reduce((sum: any, room: any) => sum + room.participants.size, 0),
-        connectedParticipants: connectedParticipants.length
-    };
-
-    log('info', `Health check requested`, health);
-    res.json(health);
-});
-
-// Get rooms info endpoint
-app.get('/rooms', (req: Request, res: Response) => {
-    const rooms = manager.getRooms();
-
-    const allRooms = Array.from(rooms.values()).map((room: any) => ({
-        id: room.id,
-        createdAt: room.createdAt,
-        lastActivity: room.lastActivity,
-        participantCount: room.participants.size,
-        maxParticipants: room.maxParticipants,
-        isActive: room.isActive,
-        timeoutDuration: room.timeoutDuration
-    }));
-
-    const activeRooms = allRooms.filter(room => room.isActive);
-
-    const roomsInfo: RoomsInfo = {
-        rooms: allRooms,
-        activeRooms: activeRooms
-    };
-
-    const tokens = manager.getReconnectionTokens();
-
-    log('info', `Rooms info requested`, {
-        totalRooms: allRooms.length,
-        activeRooms: activeRooms.length,
-        reconnectionTokens: tokens.size
-    });
-    res.json(roomsInfo);
-});
-
-app.post('/api/turn-credentials', (req: Request, res: Response) => {
-    const userName = req.body.userName;
-    const credentials = manager.generateTurnCredentials(userName);
-
-    res.json({
-        success: true,
-        timestamp: new Date().toISOString(),
-        userName: credentials.username,
-        password: credentials.password,
-        ttl: credentials.ttl,
-        servers: credentials.urls
     });
 })
 
-// Room cleanup endpoint for debugging
-app.post('/cleanup', (req, res) => {
-    log('info', 'Manual cleanup requested');
-    const rooms = manager.getRooms();
-    manager.performCleanup();
-
-    const tokens = manager.getReconnectionTokens();
-
-    res.json({
-        success: true,
-        timestamp: new Date().toISOString(),
-        remainingRooms: rooms.size,
-        remainingTokens: tokens.size
+io.on('error', (error) => {
+    metrics.recordError('socket', 'critical', 'Socket.IO server error');
+    logger.error('Socket.IO server error', {
+        error: error.message,
+        stack: error.stack
     });
 });
 
-const PORT = cfg.server.port || 3001;
 
-server.listen(PORT, () => {
-    log('info', `🚀 WebRTC Signaling Server started`, {
-        port: PORT,
-        environment: process.env.NODE_ENV || 'development'
-    });
-    log('info', `📡 Socket.IO server ready for connections`);
-    log('info', `🏥 Health check available at http://localhost:${PORT}/health`);
-    log('info', `📋 Rooms info available at http://localhost:${PORT}/rooms`);
-    log('info', `🧹 Manual cleanup available at http://localhost:${PORT}/cleanup`);
-    log('info', `⚙️ Configuration:`, {
-        roomTimeoutMinutes: cfg.room.timeoutDuration / 60000,
-        reconnectionWindowMinutes: cfg.room.participantReconnectionWindow / 60000,
-        cleanupIntervalMinutes: cfg.room.cleanupInterval / 60000
-    });
-});
+// Shutdown handling
+async function gracefulShutdown(signal: string) {
+    if (isShuttingDown) {
+        logger.info(`Received ${signal}, but already shutting down`);
+        return;
+    }
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    log('info', 'Received SIGTERM, shutting down gracefully');
-    server.close(() => {
-        log('info', 'Server closed');
+    isShuttingDown = true;
+    logger.info(`Received ${signal}, starting graceful shutdown`);
+
+    try {
+        // 1. Stop accepting new connections
+        server.close(() => {
+            logger.info('HTTP server closed');
+        });
+
+        // 2. Close all socket connections
+        await io.close(() => {
+            logger.info('Socket.io server closed');
+        });
+
+        // 3. Disconnect Prisma client
+        if (prismaInstance) {
+            await prismaInstance.$disconnect();
+            logger.info('Prisma client disconnected');
+        }
+
+        logger.info('Graceful shutdown completed');
         process.exit(0);
-    });
+    } catch (error: any) {
+        logger.error('Error during graceful shutdown:', error);
+        process.exit(1);
+    }
+}
+
+process.on("SIGTERM", () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('uncaughtException', async (error) => {
+    logger.error('Uncaught Exception:', error);
+    await gracefulShutdown('uncaughtException');
 });
 
-process.on('SIGINT', () => {
-    log('info', 'Received SIGINT, shutting down gracefully');
-    server.close(() => {
-        log('info', 'Server closed');
-        process.exit(0);
-    });
-});
+// Start the server
+const port = cfg.server.port || 3001;
+server.listen(port, () => {
+    logger.info(`Server is running on http://localhost:${port}`);
+})
