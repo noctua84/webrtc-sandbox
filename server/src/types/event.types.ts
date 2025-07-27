@@ -21,7 +21,6 @@ import {
 import {
     AddReactionRequest,
     AddReactionResponse,
-    ChatMessage,
     DeleteMessageRequest,
     DeleteMessageResponse,
     EditMessageRequest,
@@ -33,6 +32,7 @@ import {
     TypingIndicatorRequest,
     TypingIndicatorResponse
 } from "./chat.types";
+import {ChatMessage} from "@prisma/client";
 
 export interface ServerToClientEvents {
     'room-updated': (data: RoomUpdateEvent) => void;

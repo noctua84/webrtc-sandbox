@@ -12,6 +12,7 @@ import {
     typingIndicatorSchema
 } from "../validation/chat.shema";
 import {RoomManager} from "../room/manager";
+import {ChatManager} from "../chat/manager";
 
 export const createAppContainer = () => {
     const container = new Container();
@@ -62,8 +63,9 @@ export const createAppContainer = () => {
 
     container.register('messageRepository', (c) => {
         const logger = c.get<'logger'>('logger');
+        const prisma = c.get<'prisma'>('prisma');
 
-        return new MessageRepository(logger)
+        return new MessageRepository(logger, prisma);
     })
 
     container.register('roomManager', (c) => {
@@ -71,6 +73,14 @@ export const createAppContainer = () => {
         const logger = c.get<'logger'>('logger');
 
         return new RoomManager();
+    })
+
+    container.register('chatManager', (c) => {
+        const metrics = c.get<'metrics'>('metrics');
+        const repository = c.get<'messageRepository'>('messageRepository');
+        const logger = c.get<'logger'>('logger');
+
+        return new ChatManager(metrics, repository, logger);
     })
 
     return container;

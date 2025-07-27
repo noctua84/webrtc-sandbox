@@ -1,4 +1,5 @@
-import {Participant, Room} from "./room.types";
+import {Participant, Room} from "@prisma/client";
+
 
 export type RTCSdpType = 'offer' | 'answer' | 'pranswer' | 'rollback';
 

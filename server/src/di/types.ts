@@ -3,9 +3,9 @@ import {getConfig} from "../config";
 import {PrismaClient} from "@prisma/client";
 import {ServerLogger} from "../logger";
 import {MetricsCollector} from "../metrics/collector";
-import {MessageRepository} from "../db/repository/chat.repository";
 import joi from "joi";
 import {RoomManager} from "../room/manager";
+import {IChatManager, IChatRepository} from "../types/chat.types";
 
 /**
  * ServiceRegistry interface defines the structure for the service registry
@@ -42,7 +42,7 @@ export interface ServiceRegistry {
     // The actual services will be registered in the app-container.ts file.
     // For example:
     // chatService?: () => ChatService
-    messageRepository: () => MessageRepository
-    roomManager: RoomManager
-
+    messageRepository: () => IChatRepository
+    roomManager: () => RoomManager
+    chatManager: () => IChatManager
 }
