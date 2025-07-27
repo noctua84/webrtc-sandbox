@@ -13,6 +13,7 @@ import {
 } from "../validation/chat.shema";
 import {RoomManager} from "../room/manager";
 import {ChatManager} from "../chat/manager";
+import {RoomRepository} from "../db/repository/room.repository";
 
 export const createAppContainer = () => {
     const container = new Container();
@@ -46,7 +47,8 @@ export const createAppContainer = () => {
         }
     })
 
-    // Register services here
+    // Register Prisma client
+    // This should be done after the config and logger are registered
     container.register('prisma', (c) => {
         const cfg = c.get<'config'>('config');
         const logger = c.get<'logger'>('logger');
@@ -61,6 +63,9 @@ export const createAppContainer = () => {
         return prisma;
     })
 
+    // Register repositories
+    // These should be registered after the Prisma client is available
+    // Add additional repositories as needed.
     container.register('messageRepository', (c) => {
         const logger = c.get<'logger'>('logger');
         const prisma = c.get<'prisma'>('prisma');
@@ -68,11 +73,23 @@ export const createAppContainer = () => {
         return new MessageRepository(logger, prisma);
     })
 
-    container.register('roomManager', (c) => {
-        const prisma = c.get<'prisma'>('prisma');
+    container.register('roomRepository', (c) => {
         const logger = c.get<'logger'>('logger');
+        const prisma = c.get<'prisma'>('prisma');
 
-        return new RoomManager();
+        return new RoomRepository(prisma, logger);
+    })
+
+    // Register managers
+    // These should be registered after the repositories are available
+    // Add additional managers as needed.
+    container.register('roomManager', (c) => {
+        const repository = c.get<'roomRepository'>('roomRepository');
+        const metrics = c.get<'metrics'>('metrics');
+        const logger = c.get<'logger'>('logger');
+        const config = c.get<'config'>('config');
+
+        return new RoomManager(repository, logger, config);
     })
 
     container.register('chatManager', (c) => {

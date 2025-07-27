@@ -1,3 +1,5 @@
+import {Participant} from "@prisma/client";
+
 export interface CreateRoomRequest {
     roomId?: string;
     userName: string;
@@ -21,4 +23,12 @@ export interface GetRoomInfoRequest {
 
 export interface LeaveRoomRequest {
     roomId: string;
+}
+
+export interface RoomParticipant extends Participant {
+    mediaStatus: {
+        hasVideo: boolean;
+        hasAudio: boolean;
+        isScreenSharing: boolean;
+    }
 }

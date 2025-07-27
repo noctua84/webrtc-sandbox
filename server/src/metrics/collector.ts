@@ -122,7 +122,7 @@ export class MetricsCollector {
         }
     }
 
-    recordSocketEvent(eventName: string, direction: 'inbound' | 'outbound', duration?: number): void {
+    recordSocketEvent(eventName: string, direction: 'inbound' | 'outbound' | 'handled', duration?: number): void {
         socketEvents.labels(eventName, direction).inc();
         if (duration !== undefined) {
             socketEventDuration.labels(eventName).observe(duration / 1000);

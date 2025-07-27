@@ -1,4 +1,5 @@
 import {Participant, Room} from "@prisma/client";
+import {RoomParticipant} from "./room.types";
 
 
 export type RTCSdpType = 'offer' | 'answer' | 'pranswer' | 'rollback';
@@ -53,29 +54,29 @@ export interface RoomResponse {
 export interface CreateRoomResponse {
     success: boolean;
     room: RoomResponse;
-    participant: Participant;
+    participant: RoomParticipant;
     reconnectionToken: string;
 }
 
 export interface JoinRoomResponse {
     success: boolean;
     room: RoomResponse;
-    participant: Participant;
-    participants: Participant[];
+    participant: RoomParticipant;
+    participants: RoomParticipant[];
     reconnectionToken: string;
 }
 
 export interface ReconnectRoomResponse {
     success: boolean;
     room: RoomResponse;
-    participant: Participant;
-    participants: Participant[];
+    participant: RoomParticipant;
+    participants: RoomParticipant[];
 }
 
 export interface GetRoomInfoResponse {
     success: boolean;
     room: RoomResponse;
-    participants: Participant[];
+    participants: RoomParticipant[];
 }
 
 export interface LeaveRoomResponse {
@@ -91,9 +92,9 @@ export type ApiResponse<T = any> = T | ErrorResponse;
 
 export interface RoomUpdateEvent {
     roomId: string;
-    participants: Participant[];
+    participants: RoomParticipant[];
     event: 'participant-joined' | 'participant-left' | 'participant-reconnected' | 'participant-disconnected' | 'media-status-changed';
-    participant?: Participant;
+    participant?: RoomParticipant;
     leftParticipantId?: string;
 }
 

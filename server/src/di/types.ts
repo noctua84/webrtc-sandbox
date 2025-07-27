@@ -4,8 +4,9 @@ import {PrismaClient} from "@prisma/client";
 import {ServerLogger} from "../logger";
 import {MetricsCollector} from "../metrics/collector";
 import joi from "joi";
-import {RoomManager} from "../room/manager";
+import {IRoomManager, RoomManager} from "../room/manager";
 import {IChatManager, IChatRepository} from "../types/chat.types";
+import {IRoomRepository} from "../db/repository/room.repository";
 
 /**
  * ServiceRegistry interface defines the structure for the service registry
@@ -43,6 +44,7 @@ export interface ServiceRegistry {
     // For example:
     // chatService?: () => ChatService
     messageRepository: () => IChatRepository
-    roomManager: () => RoomManager
+    roomRepository: () => IRoomRepository
+    roomManager: () => IRoomManager
     chatManager: () => IChatManager
 }

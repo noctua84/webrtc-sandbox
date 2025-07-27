@@ -1,7 +1,6 @@
 // server/src/handler/chat.handler.ts
 
 import { Socket } from 'socket.io';
-import { v4 as uuidv4 } from 'uuid';
 import type {
     SendMessageRequest,
     SendMessageResponse,
@@ -18,7 +17,7 @@ import {SocketConnectionContext} from "../types/socket.types";
 
 
 export const sendMessageHandler = createHandler(
-    ['roomManager', 'logger', 'chatManager', 'metricsCollector', 'io'],
+    ['roomManager', 'logger', 'chatManager', 'metrics', 'io'],
     (roomManager, logger, chatManager, metrics, io) => (
         socket: Socket,
         data: SendMessageRequest,
@@ -142,7 +141,7 @@ export const sendMessageHandler = createHandler(
 // ================================
 
 export const editMessageHandler = createHandler(
-    ['logger', 'validationSchemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
+    ['logger', 'schemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
     (logger, schemas, metrics, roomManager, io, chatManager) =>
         (socket: Socket, data: EditMessageRequest, callback: (response: any) => void) => {
             const startTime = Date.now();
@@ -286,7 +285,7 @@ export const editMessageHandler = createHandler(
 // ================================
 
 export const deleteMessageHandler = createHandler(
-    ['logger', 'validationSchemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
+    ['logger', 'schemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
     (logger, schemas, metrics, roomManager, io, chatManager) =>
         (socket: Socket, data: DeleteMessageRequest, callback: (response: any) => void) => {
             const startTime = Date.now();
@@ -389,7 +388,7 @@ export const deleteMessageHandler = createHandler(
 // ================================
 
 export const typingIndicatorHandler = createHandler(
-    ['logger', 'validationSchemas', 'metrics', 'roomManager', 'io'] as const,
+    ['logger', 'schemas', 'metrics', 'roomManager', 'io'] as const,
     (logger, schemas, metrics, roomManager, io) =>
         (socket: Socket, data: TypingIndicatorRequest, callback: (response: any) => void) => {
             // Don't record socket events for typing - too noisy

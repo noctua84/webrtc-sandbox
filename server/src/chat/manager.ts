@@ -2,12 +2,11 @@ import {
     CreateMessageContext,
     DeleteMessageContext,
     EditMessageContext,
-    IChatManager,
+    IChatManager, IChatRepository,
     MessageFilterOptions
 } from "../types/chat.types";
 import * as crypto from "crypto";
 import {MetricsCollector} from "../metrics/collector";
-import {MessageRepository} from "../db/repository/chat.repository";
 import {ServerLogger} from "../logger";
 import {MessageReaction} from "@prisma/client";
 
@@ -17,10 +16,10 @@ function generateContentHash(content: string): string {
 
 export class ChatManager implements IChatManager {
     private metrics: MetricsCollector
-    private repository: MessageRepository
+    private repository: IChatRepository
     private logger: ServerLogger
 
-    constructor(metrics: MetricsCollector, repository: MessageRepository, logger: ServerLogger) {
+    constructor(metrics: MetricsCollector, repository: IChatRepository, logger: ServerLogger) {
         this.metrics = metrics;
         this.repository = repository;
         this.logger = logger

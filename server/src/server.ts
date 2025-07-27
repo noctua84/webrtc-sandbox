@@ -8,6 +8,10 @@ import {ClientToServerEvents, ServerToClientEvents} from "./types/event.types";
 import {setupMetricsEndpoint} from "./metrics/endpoints";
 import {registerChatHandlers} from "./handler/chat.handler";
 import {SocketConnectionContext} from "./types/socket.types";
+import {registerRoomHandlers} from "./handler/room.handler";
+import {handleDisconnect} from "./handler/connection.handler";
+import {registerWebRTCHandlers} from "./handler/webrtc.handler";
+import {registerMediaHandlers} from "./handler/media.handler";
 
 let isShuttingDown = false;
 let prismaInstance: any;
@@ -29,6 +33,8 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents>(server, {
         credentials: cfg.server.cors.credentials,
     }
 })
+
+container.set('io', io);
 
 // Middleware
 app.use(cors({
@@ -68,16 +74,16 @@ io.on('connection', socket => {
     try {
         // Register chat handlers with full DI support
         const chatHandlers = registerChatHandlers(container, context);
-
-        // TODO: Register other handlers when ready
-        // const roomHandlers = registerRoomHandlers(socketContainer, socket);
-        // const webrtcHandlers = registerWebRTCHandlers(socketContainer, socket);
+        const roomHandlers = registerRoomHandlers(container, context);
+        const webrtcHandlers = registerWebRTCHandlers(container, context);
+        const mediaHandlers = registerMediaHandlers(container, context);
 
         logger.success('All socket handlers registered', {
             socketId: socket.id,
             chatHandlers: Object.keys(chatHandlers),
-            // roomHandlers: Object.keys(roomHandlers),
-            // webrtcHandlers: Object.keys(webrtcHandlers)
+            roomHandlers: Object.keys(roomHandlers),
+            webrtcHandlers: Object.keys(webrtcHandlers),
+            mediaHandlers: Object.keys(mediaHandlers)
         });
 
     } catch (error) {
@@ -102,67 +108,13 @@ io.on('connection', socket => {
     // CONNECTION EVENT HANDLERS
     // ================================
 
-    socket.on('disconnect', (reason) => {
-        const sessionDuration = Date.now() - context.connectionTime.getTime();
-
-        logger.info('Socket disconnecting', {
-            socketId: socket.id,
-            reason,
-            sessionDuration
-        });
-
-        // Record disconnection metrics
+    socket.on('disconnect', async (reason) => {
         metrics.recordSocketConnection(false);
+        logger.info(`Socket disconnected: ${socket.id}, reason: ${reason}`);
 
-        // Clean up room membership if needed
-        try {
-            const roomManager = container.get<'roomManager'>('roomManager');
-            const roomId = roomManager.getRoomBySocketId(socket.id);
-
-            if (roomId) {
-                const result = roomManager.removeParticipantFromRoom(socket.id, false);
-
-                if (result?.room) {
-                    // Record participant leave
-                    metrics.recordParticipantLeave('disconnect', sessionDuration);
-
-                    // Broadcast room update
-                    io.to(roomId).emit('room-updated', {
-                        roomId,
-                        participants: result.room.participants,
-                        event: 'participant-disconnected',
-                        leftParticipantId: socket.id
-                    });
-
-                    // Clean up chat history if room is empty
-                    if (result.room.participants.length === 0) {
-                        const messageRepository = container.get<'messageRepository'>('messageRepository');
-                        messageRepository.clearRoomMessages(roomId);
-
-                        logger.info('Cleaned up empty room chat history', {
-                            roomId,
-                            lastParticipant: socket.id
-                        });
-                    }
-
-                    logger.info('Participant removed from room', {
-                        socketId: socket.id,
-                        roomId,
-                        remainingParticipants: result.room.participants.length
-                    });
-                }
-            }
-        } catch (error) {
-            const err = error as Error;
-            metrics.recordError('room', 'error', 'Error during disconnect cleanup');
-            logger.error('Error during disconnect cleanup', {
-                error: err.message,
-                socketId: socket.id
-            });
-        }
-
-        // Scoped container is automatically garbage collected
-    });
+        // Handle graceful disconnection
+        await handleDisconnect(socket, container, reason);
+    })
 
     socket.on('error', (error) => {
         metrics.recordError('socket', 'error', 'Socket error');
