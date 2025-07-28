@@ -257,7 +257,10 @@ export const webrtcOfferHandler = createHandler(
                     success: false,
                     error: 'Internal server error while handling WebRTC offer'
                 };
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -384,7 +387,10 @@ export const webrtcAnswerHandler = createHandler(
                     success: false,
                     error: 'Internal server error while handling WebRTC answer'
                 };
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -532,7 +538,10 @@ export const webrtcIceCandidateHandler = createHandler(
                     success: false,
                     error: 'Internal server error while handling WebRTC ICE candidate'
                 };
-                callback?.(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );

@@ -131,7 +131,11 @@ export const sendMessageHandler = createHandler(
                 success: false,
                 error: 'Internal server error while sending message'
             };
-            callback(response);
+
+            // Safe callback invocation
+            if (callback && typeof callback === 'function') {
+                callback(response);
+            }
         }
     }
 );
@@ -275,7 +279,11 @@ export const editMessageHandler = createHandler(
                     success: false,
                     error: 'Internal server error while editing message'
                 };
-                callback(response);
+
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -378,7 +386,10 @@ export const deleteMessageHandler = createHandler(
                     error: 'Internal server error while deleting message'
                 };
 
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -468,7 +479,11 @@ export const typingIndicatorHandler = createHandler(
                     success: false,
                     error: 'Internal server error while handling typing indicator'
                 };
-                callback(response);
+
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -557,7 +572,11 @@ export const getChatHistoryHandler = createHandler(
                     success: false,
                     error: 'Internal server error while getting chat history'
                 };
-                callback(response);
+
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );

@@ -165,7 +165,10 @@ export const updateMediaStatusHandler = createHandler(
                     success: false,
                     error: 'Internal server error while updating media status'
                 };
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );

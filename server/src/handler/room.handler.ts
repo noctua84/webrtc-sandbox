@@ -164,7 +164,11 @@ export const createRoomHandler = createHandler(
                     success: false,
                     error: 'Internal server error while creating room'
                 };
-                callback(response);
+
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -295,7 +299,11 @@ export const joinRoomHandler = createHandler(
                     success: false,
                     error: 'Internal server error while joining room'
                 };
-                callback(response);
+
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -413,7 +421,10 @@ export const leaveRoomHandler = createHandler(
                     success: false,
                     error: 'Internal server error while leaving room'
                 };
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -488,7 +499,10 @@ export const getRoomInfoHandler = createHandler(
                     success: false,
                     error: 'Internal server error while getting room info'
                 };
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
@@ -624,7 +638,10 @@ export const reconnectRoomHandler = createHandler(
                     success: false,
                     error: 'Internal server error while reconnecting to room'
                 };
-                callback(response);
+                // Safe callback invocation
+                if (callback && typeof callback === 'function') {
+                    callback(response);
+                }
             }
         }
 );
