@@ -1,6 +1,6 @@
 import { Socket } from "socket.io";
-import { Container } from "../di/container";
-import { createHandler } from "../di/helpers";
+import { Container } from "../di";
+import { createHandler } from "../di";
 import { MediaStatusUpdate, ErrorResponse, RoomUpdateEvent } from "../types/webrtc.types";
 import { SocketConnectionContext } from "../types/socket.types";
 import {RoomParticipant} from "../types/room.types";
@@ -76,10 +76,6 @@ export const updateMediaStatusHandler = createHandler(
                     return callback(response);
                 }
 
-                // Note: Media status is not stored in database (as per schema comment)
-                // It's kept in memory/Redis for performance
-                // We just need to validate the participant exists and broadcast the update
-
                 // Find participant in room
                 const participant = room.participants.find((p: any) => p.socketId === socket.id);
                 if (!participant) {
@@ -97,33 +93,67 @@ export const updateMediaStatusHandler = createHandler(
                 // Update room activity
                 await roomManager.updateRoomActivity(roomId);
 
-                // Create participant object with media status for broadcasting
+                // Create participant with media status - use correct creator check
                 const participantWithMedia: RoomParticipant = {
-                    socketId: participant.socketId,
-                    userName: participant.userName,
-                    isCreator: participant.isCreator,
-                    joinedAt: participant.joinedAt.toISOString(),
-                    lastSeen: participant.lastSeen.toISOString(),
-                    reconnectionToken: participant.reconnectionToken!,
+                    ...participant, // Spread all Participant fields
                     mediaStatus: {
                         hasVideo,
                         hasAudio,
                         isScreenSharing
-                    },
-                    roomId: "",
-                    id: ""
+                    }
                 };
+
+                // Create all participants array with updated media status
+                const allParticipants: RoomParticipant[] = room.participants.map((p: any) => {
+                    const isCurrentParticipant = p.socketId === socket.id;
+                    return {
+                        ...p, // Spread all Participant fields
+                        mediaStatus: isCurrentParticipant ? {
+                            hasVideo,
+                            hasAudio,
+                            isScreenSharing
+                        } : {
+                            hasVideo: false,
+                            hasAudio: false,
+                            isScreenSharing: false
+                        }
+                    };
+                });
 
                 // Broadcast media status change to other participants
                 const updateEvent: RoomUpdateEvent = {
                     roomId,
-                    participants: roomManager.participantsToArray(room.participants).map((p: any) =>
-                        p.socketId === socket.id
-                            ? { ...p, mediaStatus: { hasVideo, hasAudio, isScreenSharing } }
-                            : p
-                    ),
+                    participants: allParticipants.map(p => ({
+                        id: p.id,
+                        socketId: p.socketId!,
+                        userName: p.userName,
+                        userEmail: p.userEmail,
+                        extUserId: p.extUserId,
+                        isCreator: p.id === room.creatorId, // Correct creator check using room.creatorId
+                        joinedAt: p.joinedAt?.toISOString() || new Date().toISOString(),
+                        lastSeen: p.lastSeen?.toISOString() || new Date().toISOString(),
+                        reconnectionToken: p.reconnectionToken!,
+                        roomId: roomId,
+                        mediaStatus: p.mediaStatus
+                    })),
                     event: 'media-status-changed',
-                    participant: participantWithMedia
+                    participant: {
+                        id: participant.id,
+                        socketId: participant.socketId!,
+                        userName: participant.userName,
+                        userEmail: participant.userEmail,
+                        extUserId: participant.extUserId,
+                        isCreator: participant.id === room.creatorId, // Correct creator check
+                        joinedAt: participant.joinedAt?.toISOString() || new Date().toISOString(),
+                        lastSeen: participant.lastSeen?.toISOString() || new Date().toISOString(),
+                        reconnectionToken: participant.reconnectionToken!,
+                        roomId: roomId,
+                        mediaStatus: {
+                            hasVideo,
+                            hasAudio,
+                            isScreenSharing
+                        }
+                    }
                 };
 
                 socket.to(roomId).emit('room-updated', updateEvent);
@@ -146,6 +176,7 @@ export const updateMediaStatusHandler = createHandler(
                     socketId: socket.id,
                     roomId,
                     mediaStatus: { hasVideo, hasAudio, isScreenSharing },
+                    participantCount: room.participants.length,
                     processingTime
                 });
 

@@ -14,6 +14,15 @@ import {
 import {RoomManager} from "../room/manager";
 import {ChatManager} from "../chat/manager";
 import {RoomRepository} from "../db/repository/room.repository";
+import {
+    analyticsRangeSchema,
+    bookParticipantSchema,
+    cancelBookingSchema, closeEventSchema,
+    createEventSchema, eventFiltersSchema,
+    joinEventSchema, updateEventSchema
+} from "../validation/event.shema";
+import {EventManager} from "../event/manager";
+import {EventRepository} from "../db/repository/event.repository";
 
 export const createAppContainer = () => {
     const container = new Container();
@@ -44,6 +53,15 @@ export const createAppContainer = () => {
             typingIndicator: typingIndicatorSchema,
             addReaction: addReactionSchema,
             removeReaction: removeReactionSchema,
+            // event validation schemas
+            createEvent: createEventSchema,
+            bookParticipant: bookParticipantSchema,
+            cancelBooking: cancelBookingSchema,
+            joinEvent: joinEventSchema,
+            closeEvent: closeEventSchema,
+            updateEvent: updateEventSchema,
+            eventFilters: eventFiltersSchema,
+            analyticsRange: analyticsRangeSchema,
         }
     })
 
@@ -76,8 +94,17 @@ export const createAppContainer = () => {
     container.register('roomRepository', (c) => {
         const logger = c.get<'logger'>('logger');
         const prisma = c.get<'prisma'>('prisma');
+        const config = c.get<'config'>('config');
 
-        return new RoomRepository(prisma, logger);
+        return new RoomRepository(prisma, logger, config);
+    })
+
+    container.register('eventRepository', (c) => {
+        const logger = c.get<'logger'>('logger');
+        const prisma = c.get<'prisma'>('prisma');
+        const config = c.get<'config'>('config');
+
+        return new EventRepository(prisma, logger);
     })
 
     // Register managers
@@ -98,6 +125,15 @@ export const createAppContainer = () => {
         const logger = c.get<'logger'>('logger');
 
         return new ChatManager(metrics, repository, logger);
+    })
+
+    container.register('eventManager', (c) => {
+        const repository = c.get<'eventRepository'>('eventRepository');
+        const logger = c.get<'logger'>('logger');
+        const config = c.get<'config'>('config');
+        const roomManager = c.get<'roomManager'>('roomManager');
+
+        return new EventManager(repository, roomManager, logger, config);
     })
 
     return container;

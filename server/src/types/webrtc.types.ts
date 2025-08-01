@@ -51,32 +51,51 @@ export interface RoomResponse {
     timeoutDuration: number;
 }
 
+// Updated to match new schema structure
+export interface RoomParticipantResponse {
+    id: string;
+    socketId: string;
+    userName: string;
+    userEmail: string;
+    extUserId: string;
+    isCreator: boolean;
+    joinedAt: string;
+    lastSeen: string;
+    reconnectionToken: string;
+    roomId: string;
+    mediaStatus: {
+        hasVideo: boolean;
+        hasAudio: boolean;
+        isScreenSharing: boolean;
+    };
+}
+
 export interface CreateRoomResponse {
     success: boolean;
     room: RoomResponse;
-    participant: RoomParticipant;
+    participant: RoomParticipantResponse;
     reconnectionToken: string;
 }
 
 export interface JoinRoomResponse {
     success: boolean;
     room: RoomResponse;
-    participant: RoomParticipant;
-    participants: RoomParticipant[];
+    participant: RoomParticipantResponse;
+    participants: RoomParticipantResponse[];
     reconnectionToken: string;
 }
 
 export interface ReconnectRoomResponse {
     success: boolean;
     room: RoomResponse;
-    participant: RoomParticipant;
-    participants: RoomParticipant[];
+    participant: RoomParticipantResponse;
+    participants: RoomParticipantResponse[];
 }
 
 export interface GetRoomInfoResponse {
     success: boolean;
     room: RoomResponse;
-    participants: RoomParticipant[];
+    participants: RoomParticipantResponse[];
 }
 
 export interface LeaveRoomResponse {
@@ -92,9 +111,9 @@ export type ApiResponse<T = any> = T | ErrorResponse;
 
 export interface RoomUpdateEvent {
     roomId: string;
-    participants: RoomParticipant[];
+    participants: RoomParticipantResponse[];
     event: 'participant-joined' | 'participant-left' | 'participant-reconnected' | 'participant-disconnected' | 'media-status-changed';
-    participant?: RoomParticipant;
+    participant?: RoomParticipantResponse;
     leftParticipantId?: string;
 }
 
@@ -116,15 +135,23 @@ export interface RoomsInfo {
 export interface AddParticipantResult {
     success: boolean;
     error?: string;
-    room?: Room;
+    room?: Room & { participants: Participant[] };
     participant?: Participant;
     isReconnection?: boolean;
 }
 
 export interface RemoveParticipantResult {
+    success: boolean;
     roomId: string;
-    room: Room | null;
+    room: (Room & { participants: Participant[] }) | null;
     wasConnected: boolean;
+    participant?: Participant;
+}
+
+export interface CreateRoomResult {
+    success: boolean;
+    error?: string;
+    room?: Room & { participants: Participant[] };
 }
 
 export interface ReconnectionAttempt {

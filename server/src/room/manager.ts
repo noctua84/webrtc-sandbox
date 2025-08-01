@@ -8,7 +8,7 @@ import {
 } from "../db/repository/room.repository";
 import crypto from 'crypto';
 
-// Response types for manager operations
+// Updated response types to match new schema
 export interface CreateRoomResult {
     success: boolean;
     room?: PrismaRoom;
@@ -24,9 +24,10 @@ export interface AddParticipantResult {
 }
 
 export interface IRoomManager {
-    createRoom(roomId: string, creatorSocketId: string, options?: { maxParticipants?: number; timeoutDuration?: number }): Promise<CreateRoomResult>;
+    createRoomForEvent(eventId: string, creatorExtUserId: string, creatorInfo: { userName: string; userEmail: string }, options?: { maxParticipants?: number; timeoutDuration?: number }): Promise<CreateRoomResult>;
     getRoomById(roomId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null>;
-    addParticipantToRoom(roomId: string, socketId: string, participantInfo: { userName: string; isCreator: boolean }, reconnectionToken?: string): Promise<AddParticipantResult>;
+    getRoomByEventId(eventId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null>;
+    addParticipantToRoom(roomId: string, socketId: string, participantInfo: { extUserId: string; userName: string; userEmail: string }, reconnectionToken?: string): Promise<AddParticipantResult>;
     removeParticipantFromRoom(socketId: string): Promise<boolean>;
     getRoomBySocketId(socketId: string): Promise<string | null>;
     updateRoomActivity(roomId: string): Promise<void>;
@@ -34,12 +35,15 @@ export interface IRoomManager {
     validateReconnectionToken(token: string, roomId: string): Promise<PrismaParticipant | null>;
     cleanupInactiveRooms(): Promise<number>;
     participantsToArray(participants: PrismaParticipant[]): any[];
+    generateJoinToken(eventId: string, userId: string): string;
+    validateJoinToken(token: string, eventId: string, userId: string): boolean;
+    disconnectAllParticipants(roomId: string): Promise<void>;
+    stopCleanupInterval(): void;
 }
 
 /**
  * Room Manager - Business logic layer for room operations
- * Handles validation, business rules, and coordinates with repository
- * Follows the domain manager pattern established in the codebase
+ * Updated to work with new event-centric schema
  */
 export class RoomManager implements IRoomManager {
     private repository: IRoomRepository;
@@ -55,44 +59,49 @@ export class RoomManager implements IRoomManager {
     }
 
     /**
-     * Create a new room with validation
+     * Create a new room for an event (replaces createRoom)
+     * Rooms must be associated with events in the new schema
      */
-    async createRoom(
-        roomId: string,
-        creatorSocketId: string,
+    async createRoomForEvent(
+        eventId: string,
+        creatorExtUserId: string,
+        creatorInfo: { userName: string; userEmail: string },
         options: { maxParticipants?: number; timeoutDuration?: number } = {}
     ): Promise<CreateRoomResult> {
         try {
             // Validate input
-            if (!roomId || !creatorSocketId) {
+            if (!eventId || !creatorExtUserId || !creatorInfo.userName || !creatorInfo.userEmail) {
                 return {
                     success: false,
-                    error: 'Room ID and creator socket ID are required'
+                    error: 'Event ID, creator user ID, username, and email are required'
                 };
             }
 
-            // Check if room already exists
-            const existingRoom = await this.repository.getRoomById(roomId);
+            // Check if room already exists for this event
+            const existingRoom = await this.repository.getRoomByEventId(eventId);
             if (existingRoom) {
                 return {
                     success: false,
-                    error: 'Room already exists'
+                    error: 'Room already exists for this event'
                 };
             }
 
             // Create room via repository
             const context: CreateRoomContext = {
-                roomId,
-                creatorSocketId,
+                eventId,
+                creatorExtUserId,
+                creatorUserName: creatorInfo.userName,
+                creatorUserEmail: creatorInfo.userEmail,
                 maxParticipants: options.maxParticipants || this.config.room.maxParticipants,
                 timeoutDuration: options.timeoutDuration || this.config.room.timeoutDuration
             };
 
             const room = await this.repository.createRoom(context);
 
-            this.logger.info('Room created via manager', {
+            this.logger.info('Room created for event via manager', {
                 roomId: room.id,
-                creator: room.creator
+                eventId,
+                creator: room.creatorId
             });
 
             return {
@@ -100,10 +109,10 @@ export class RoomManager implements IRoomManager {
                 room
             };
         } catch (error) {
-            this.logger.error('Failed to create room via manager', {
+            this.logger.error('Failed to create room for event via manager', {
                 error,
-                roomId,
-                creatorSocketId
+                eventId,
+                creatorExtUserId
             });
             return {
                 success: false,
@@ -124,21 +133,30 @@ export class RoomManager implements IRoomManager {
         }
     }
 
+    async getRoomByEventId(eventId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null> {
+        try {
+            return await this.repository.getRoomByEventId(eventId);
+        } catch (error) {
+            this.logger.error('Failed to get room by event ID via manager', { error, eventId });
+            return null;
+        }
+    }
+
     /**
-     * Add participant to room with business logic
+     * Add participant to room with updated business logic
      */
     async addParticipantToRoom(
         roomId: string,
         socketId: string,
-        participantInfo: { userName: string; isCreator: boolean },
+        participantInfo: { extUserId: string; userName: string; userEmail: string },
         reconnectionToken?: string
     ): Promise<AddParticipantResult> {
         try {
             // Validate input
-            if (!roomId || !socketId || !participantInfo.userName?.trim()) {
+            if (!roomId || !socketId || !participantInfo.extUserId || !participantInfo.userName?.trim() || !participantInfo.userEmail) {
                 return {
                     success: false,
-                    error: 'Room ID, socket ID, and username are required'
+                    error: 'Room ID, socket ID, external user ID, username, and email are required'
                 };
             }
 
@@ -162,15 +180,27 @@ export class RoomManager implements IRoomManager {
             let isReconnection = false;
             if (reconnectionToken) {
                 const existingParticipant = await this.repository.getParticipantByToken(reconnectionToken);
-                if (existingParticipant && existingParticipant.roomId === roomId) {
-                    // Remove old participant record and create new one
-                    await this.repository.removeParticipant(existingParticipant.socketId);
+                if (existingParticipant && (
+                    existingParticipant.createdRoom?.id === roomId ||
+                    existingParticipant.participantRooms.some(pr => pr.id === roomId)
+                )) {
+                    // Update existing participant with new socket
+                    await this.repository.updateParticipantSocket(existingParticipant.id, socketId);
                     isReconnection = true;
                     this.logger.info('Participant reconnecting', {
-                        oldSocketId: existingParticipant.socketId,
+                        participantId: existingParticipant.id,
                         newSocketId: socketId,
                         roomId
                     });
+
+                    // Get updated room data
+                    const updatedRoom = await this.repository.getRoomById(roomId);
+                    return {
+                        success: true,
+                        participant: existingParticipant,
+                        room: updatedRoom!,
+                        isReconnection: true
+                    };
                 }
             }
 
@@ -182,12 +212,12 @@ export class RoomManager implements IRoomManager {
                 };
             }
 
-            // Check if socket is already in a room
+            // Check if socket is already in use
             const existingParticipant = await this.repository.getParticipantBySocketId(socketId);
             if (existingParticipant) {
                 return {
                     success: false,
-                    error: 'Socket already in a room'
+                    error: 'Socket already in use'
                 };
             }
 
@@ -195,8 +225,9 @@ export class RoomManager implements IRoomManager {
             const context: AddParticipantContext = {
                 roomId,
                 socketId,
+                extUserId: participantInfo.extUserId,
                 userName: participantInfo.userName.trim(),
-                isCreator: participantInfo.isCreator,
+                userEmail: participantInfo.userEmail,
                 reconnectionToken: reconnectionToken || this.generateReconnectionToken()
             };
 
@@ -211,6 +242,7 @@ export class RoomManager implements IRoomManager {
             this.logger.info('Participant added via manager', {
                 socketId,
                 roomId,
+                extUserId: participantInfo.extUserId,
                 userName: participantInfo.userName,
                 isReconnection
             });
@@ -246,13 +278,15 @@ export class RoomManager implements IRoomManager {
 
             const success = await this.repository.removeParticipant(socketId);
 
-            if (success) {
-                // Update room activity
-                await this.repository.updateRoomActivity(participant.roomId);
+            if (success && participant.participantRooms.length > 0) {
+                // Update room activity for all rooms the participant was in
+                for (const room of participant.participantRooms) {
+                    await this.repository.updateRoomActivity(room.id);
+                }
 
                 this.logger.info('Participant removed via manager', {
                     socketId,
-                    roomId: participant.roomId
+                    participantId: participant.id
                 });
             }
 
@@ -272,7 +306,8 @@ export class RoomManager implements IRoomManager {
     async getRoomBySocketId(socketId: string): Promise<string | null> {
         try {
             const participant = await this.repository.getParticipantBySocketId(socketId);
-            return participant?.roomId || null;
+            // Return the first room ID if participant is in any rooms
+            return participant?.participantRooms[0]?.id || participant?.createdRoom?.id || null;
         } catch (error) {
             this.logger.error('Failed to get room by socket ID', { error, socketId });
             return null;
@@ -307,7 +342,10 @@ export class RoomManager implements IRoomManager {
         try {
             const participant = await this.repository.getParticipantByToken(token);
 
-            if (participant && participant.roomId === roomId) {
+            if (participant && (
+                participant.createdRoom?.id === roomId ||
+                participant.participantRooms.some(room => room.id === roomId)
+            )) {
                 return participant;
             }
 
@@ -341,15 +379,18 @@ export class RoomManager implements IRoomManager {
     }
 
     /**
-     * Convert participants to array for response
+     * Convert participants to array for response (updated for new schema)
      */
     participantsToArray(participants: PrismaParticipant[]): any[] {
         return participants.map(p => ({
+            id: p.id,
             socketId: p.socketId,
+            extUserId: p.extUserId,
             userName: p.userName,
-            isCreator: p.isCreator,
+            userEmail: p.userEmail,
             joinedAt: p.joinedAt.toISOString(),
             lastSeen: p.lastSeen.toISOString(),
+            isConnected: p.isConnected,
             reconnectionToken: p.reconnectionToken,
             // Note: Media status is not stored in DB, handled in memory
             mediaStatus: {
@@ -360,9 +401,8 @@ export class RoomManager implements IRoomManager {
         }));
     }
 
-    /**
-     * Start cleanup interval
-     */
+    // ... rest of the methods remain the same (cleanup interval, tokens, etc.)
+
     private startCleanupInterval(): void {
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval);
@@ -377,14 +417,70 @@ export class RoomManager implements IRoomManager {
         });
     }
 
-    /**
-     * Stop cleanup interval (for graceful shutdown)
-     */
     public stopCleanupInterval(): void {
         if (this.cleanupInterval) {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
             this.logger.info('Room cleanup interval stopped');
+        }
+    }
+
+    generateJoinToken(eventId: string, userId: string): string {
+        const timestamp = Date.now();
+        const tokenData = `${eventId}:${userId}:${timestamp}`;
+
+        if (this.config.turnServer.secret) {
+            const hmac = crypto.createHmac('sha256', this.config.turnServer.secret);
+            hmac.update(tokenData);
+            return `${timestamp}.${hmac.digest('hex')}`;
+        }
+
+        return `${timestamp}.${crypto.randomBytes(16).toString('hex')}`;
+    }
+
+    async disconnectAllParticipants(roomId: string): Promise<void> {
+        try {
+            this.logger.info('Disconnecting all participants from closed event room', {
+                roomId
+            });
+        } catch (error) {
+            const err = error as Error;
+            this.logger.error('Failed to disconnect participants', {
+                roomId,
+                error: err.message
+            });
+        }
+    }
+
+    validateJoinToken(token: string, eventId: string, userId: string): boolean {
+        try {
+            const [timestampStr, signature] = token.split('.');
+            const timestamp = parseInt(timestampStr);
+
+            const maxAge = 60 * 60 * 1000; // 1 hour
+            if (Date.now() - timestamp > maxAge) {
+                return false;
+            }
+
+            if (this.config.turnServer.secret) {
+                const tokenData = `${eventId}:${userId}:${timestamp}`;
+                const hmac = crypto.createHmac('sha256', this.config.turnServer.secret);
+                hmac.update(tokenData);
+                const expectedSignature = hmac.digest('hex');
+
+                return signature === expectedSignature;
+            }
+
+            return signature !== null && signature.length === 32;
+
+        } catch (error) {
+            this.logger.error('Failed to validate join token', {
+                token,
+                eventId,
+                userId,
+                error: (error as Error).message
+            });
+            return false;
         }
     }
 }

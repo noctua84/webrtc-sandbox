@@ -18,6 +18,7 @@ import {
 } from "../types/webrtc.types";
 import { v4 as uuidv4 } from 'uuid';
 import { createHandler } from "../di";
+import {Room} from "@prisma/client";
 
 // ================================
 // CREATE ROOM HANDLER
@@ -35,9 +36,19 @@ export const createRoomHandler = createHandler(
                     data
                 });
 
-                const { roomId = uuidv4(), userName, reconnectionToken } = data;
+                const { eventId, userName, userEmail, reconnectionToken } = data;
 
-                // Validate input
+                // Validate input - eventId is now required
+                if (!eventId) {
+                    metrics.recordError('room', 'error', 'Event ID is required for room creation');
+                    logger.error('Event ID is required', { socketId: socket.id });
+                    const response: ErrorResponse = {
+                        success: false,
+                        error: 'Event ID is required for room creation'
+                    };
+                    return callback(response);
+                }
+
                 if (!userName || userName.trim().length === 0) {
                     metrics.recordError('room', 'error', 'Invalid username provided');
                     logger.error('Invalid userName provided', { socketId: socket.id, userName });
@@ -48,13 +59,31 @@ export const createRoomHandler = createHandler(
                     return callback(response);
                 }
 
-                // Check if room already exists
-                let room = await roomManager.getRoomById(roomId);
+                if (!userEmail || userEmail.trim().length === 0) {
+                    metrics.recordError('room', 'error', 'Invalid email provided');
+                    logger.error('Invalid userEmail provided', { socketId: socket.id, userEmail });
+                    const response: ErrorResponse = {
+                        success: false,
+                        error: 'Email is required and cannot be empty'
+                    };
+                    return callback(response);
+                }
+
+                // Extract extUserId from socket or data
+                const extUserId = socket.data?.userId || socket.data?.extUserId || socket.id;
+
+                // Check if room already exists for this event
+                let room = await roomManager.getRoomByEventId(eventId);
                 let isNewRoom = false;
 
                 if (!room) {
-                    // Create new room
-                    const createResult = await roomManager.createRoom(roomId, socket.id);
+                    // Create new room for the event
+                    const createResult = await roomManager.createRoomForEvent(
+                        eventId,
+                        extUserId,
+                        { userName: userName.trim(), userEmail: userEmail.trim() }
+                    );
+
                     if (!createResult.success) {
                         const response: ErrorResponse = {
                             success: false,
@@ -62,10 +91,10 @@ export const createRoomHandler = createHandler(
                         };
                         return callback(response);
                     }
-                    room = await roomManager.getRoomById(roomId);
+                    room = createResult.room!;
                     isNewRoom = true;
                 } else if (!room.isActive) {
-                    logger.error('Room exists but is not active', { roomId, socketId: socket.id });
+                    logger.error('Room exists but is not active', { eventId, socketId: socket.id });
                     const response: ErrorResponse = {
                         success: false,
                         error: 'Room exists but is no longer active'
@@ -74,14 +103,20 @@ export const createRoomHandler = createHandler(
                 }
 
                 // Add creator as participant
-                const participantResult = await roomManager.addParticipantToRoom(roomId, socket.id, {
-                    userName: userName.trim(),
-                    isCreator: isNewRoom
-                }, reconnectionToken);
+                const participantResult = await roomManager.addParticipantToRoom(
+                    room.id,
+                    socket.id,
+                    {
+                        extUserId,
+                        userName: userName.trim(),
+                        userEmail: userEmail.trim()
+                    },
+                    reconnectionToken
+                );
 
                 if (!participantResult.success) {
                     logger.error('Failed to add creator to room', {
-                        roomId,
+                        roomId: room.id,
                         socketId: socket.id,
                         error: participantResult.error
                     });
@@ -93,15 +128,17 @@ export const createRoomHandler = createHandler(
                 }
 
                 // Join socket to room channel
-                socket.join(roomId);
-                logger.info('Socket joined room channel', { socketId: socket.id, roomId });
+                socket.join(room.id);
+                logger.info('Socket joined room channel', { socketId: socket.id, roomId: room.id });
 
                 // Store socket data
                 socket.data = {
                     ...socket.data,
-                    roomId,
+                    roomId: room.id,
                     userName: userName.trim(),
-                    isCreator: isNewRoom
+                    userEmail: userEmail.trim(),
+                    extUserId,
+                    eventId
                 };
 
                 // Record metrics
@@ -111,28 +148,30 @@ export const createRoomHandler = createHandler(
                 const response: CreateRoomResponse = {
                     success: true,
                     room: {
-                        id: room!.id,
-                        createdAt: room!.createdAt.toISOString(),
-                        lastActivity: room!.lastActivity.toISOString(),
-                        participantCount: room!.participants.length,
-                        maxParticipants: room!.maxParticipants,
-                        isActive: room!.isActive,
-                        timeoutDuration: room!.timeoutDuration
+                        id: room.id,
+                        createdAt: room.createdAt.toISOString(),
+                        lastActivity: room.lastActivity.toISOString(),
+                        participantCount: room.participants.length,
+                        maxParticipants: room.maxParticipants,
+                        isActive: room.isActive,
+                        timeoutDuration: room.timeoutDuration
                     },
                     participant: {
-                        socketId: participantResult.participant!.socketId,
+                        id: participantResult.participant!.id,
+                        socketId: participantResult.participant!.socketId!,
                         userName: participantResult.participant!.userName,
-                        isCreator: participantResult.participant!.isCreator,
-                        joinedAt: participantResult.participant!.joinedAt.toISOString(),
-                        lastSeen: participantResult.participant!.lastSeen.toISOString(),
+                        userEmail: participantResult.participant!.userEmail,
+                        extUserId: participantResult.participant!.extUserId,
+                        isCreator: participantResult.participant!.creatorOf.length > 0,
+                        joinedAt: participantResult.participant!.joinedAt?.toISOString() || new Date().toISOString(),
+                        lastSeen: participantResult.participant!.lastSeen?.toISOString() || new Date().toISOString(),
                         reconnectionToken: participantResult.participant!.reconnectionToken!,
                         mediaStatus: {
                             hasVideo: false,
                             hasAudio: false,
                             isScreenSharing: false
                         },
-                        id: participantResult.participant!.id,
-                        roomId: participantResult.participant!.roomId
+                        roomId: room.id
                     },
                     reconnectionToken: participantResult.participant!.reconnectionToken!
                 };
@@ -143,12 +182,12 @@ export const createRoomHandler = createHandler(
                 // Broadcast room creation to other participants if rejoining existing room
                 if (!isNewRoom) {
                     const updateEvent: RoomUpdateEvent = {
-                        roomId,
+                        roomId: room.id,
                         participants: roomManager.participantsToArray(participantResult.room!.participants),
                         event: participantResult.isReconnection ? 'participant-reconnected' : 'participant-joined',
                         participant: response.participant
                     };
-                    socket.to(roomId).emit('room-updated', updateEvent);
+                    socket.to(room.id).emit('room-updated', updateEvent);
                 }
 
             } catch (error: any) {
@@ -165,7 +204,6 @@ export const createRoomHandler = createHandler(
                     error: 'Internal server error while creating room'
                 };
 
-                // Safe callback invocation
                 if (callback && typeof callback === 'function') {
                     callback(response);
                 }
@@ -178,8 +216,8 @@ export const createRoomHandler = createHandler(
 // ================================
 
 export const joinRoomHandler = createHandler(
-    ['logger', 'metrics', 'roomManager', 'io'] as const,
-    (logger, metrics, roomManager, io) =>
+    ['logger', 'metrics', 'roomManager', 'io', 'eventManager'] as const,
+    (logger, metrics, roomManager, io, eventManager) =>
         async (socket: Socket, data: JoinRoomRequest, callback: (response: JoinRoomResponse | ErrorResponse) => void) => {
             const startTime = Date.now();
 
@@ -189,10 +227,40 @@ export const joinRoomHandler = createHandler(
                     data
                 });
 
-                const { roomId, userName, reconnectionToken } = data;
+                // Validate required fields
+                if (!data.eventId || !data.extUserId || !data.userName || !data.userEmail) {
+                    const response: ErrorResponse = {
+                        success: false,
+                        error: 'Event ID, external user ID, username, and email are required'
+                    };
+                    return callback(response);
+                }
+
+                const isAuthorized = await eventManager.isUserAuthorizedForEvent(
+                    data.eventId,
+                    data.extUserId
+                );
+
+                if (!isAuthorized) {
+                    logger.error('Unauthorized join-room attempt', {
+                        socketId: socket.id,
+                        eventId: data.eventId,
+                        extUserId: data.extUserId
+                    });
+                    metrics.recordError('room', 'error', 'User not authorized to join room');
+                    const response: ErrorResponse = {
+                        success: false,
+                        error: 'You are not authorized to join this room'
+                    };
+                    return callback(response);
+                }
+
+                const { roomId, userName, userEmail, extUserId, reconnectionToken } = data;
 
                 // Validate input
                 if (!roomId) {
+                    metrics.recordError('room', 'error', 'Room ID is required for joining');
+                    logger.error('Room ID is required for joining', { socketId: socket.id, roomId });
                     const response: ErrorResponse = {
                         success: false,
                         error: 'Room ID is required'
@@ -200,21 +268,20 @@ export const joinRoomHandler = createHandler(
                     return callback(response);
                 }
 
-                if (!userName || userName.trim().length === 0) {
-                    const response: ErrorResponse = {
-                        success: false,
-                        error: 'Username is required and cannot be empty'
-                    };
-                    return callback(response);
-                }
-
                 // Add participant to room
-                const result = await roomManager.addParticipantToRoom(roomId, socket.id, {
-                    userName: userName.trim(),
-                    isCreator: false
-                }, reconnectionToken);
+                const result = await roomManager.addParticipantToRoom(
+                    roomId,
+                    socket.id,
+                    {
+                        extUserId,
+                        userName: userName.trim(),
+                        userEmail: userEmail.trim()
+                    },
+                    reconnectionToken
+                );
 
                 if (!result.success) {
+                    metrics.recordError('room', 'error', result.error || 'Failed to join room');
                     logger.error('Failed to join room', {
                         roomId,
                         socketId: socket.id,
@@ -236,7 +303,9 @@ export const joinRoomHandler = createHandler(
                     ...socket.data,
                     roomId,
                     userName: userName.trim(),
-                    isCreator: false
+                    userEmail: userEmail.trim(),
+                    extUserId,
+                    eventId: data.eventId
                 };
 
                 // Record metrics
@@ -256,12 +325,14 @@ export const joinRoomHandler = createHandler(
                     },
                     participant: {
                         id: result.participant!.id,
-                        roomId: result.participant!.roomId,
-                        socketId: result.participant!.socketId,
+                        roomId: roomId,
+                        socketId: result.participant!.socketId!,
                         userName: result.participant!.userName,
-                        isCreator: result.participant!.isCreator,
-                        joinedAt: result.participant!.joinedAt.toISOString(),
-                        lastSeen: result.participant!.lastSeen.toISOString(),
+                        userEmail: result.participant!.userEmail,
+                        extUserId: result.participant!.extUserId,
+                        isCreator: result.participant!.creatorOf.length > 0,
+                        joinedAt: result.participant!.joinedAt?.toISOString() || new Date().toISOString(),
+                        lastSeen: result.participant!.lastSeen?.toISOString() || new Date().toISOString(),
                         reconnectionToken: result.participant!.reconnectionToken!,
                         mediaStatus: {
                             hasVideo: false,
@@ -300,7 +371,6 @@ export const joinRoomHandler = createHandler(
                     error: 'Internal server error while joining room'
                 };
 
-                // Safe callback invocation
                 if (callback && typeof callback === 'function') {
                     callback(response);
                 }
@@ -393,8 +463,8 @@ export const leaveRoomHandler = createHandler(
                             socketId: socket.id,
                             userName: socket.data?.userName || 'Unknown',
                             isCreator: socket.data?.isCreator || false,
-                            joinedAt: new Date(),
-                            lastSeen: new Date(),
+                            joinedAt: new Date().toISOString(),
+                            lastSeen: new Date().toISOString(),
                             reconnectionToken: '',
                             mediaStatus: {
                                 hasVideo: false,
@@ -402,7 +472,9 @@ export const leaveRoomHandler = createHandler(
                                 isScreenSharing: false
                             },
                             roomId: data.roomId,
-                            id: ""
+                            id: "",
+                            userEmail: "",
+                            extUserId: ""
                         }
                     };
                     socket.to(data.roomId).emit('room-updated', updateEvent);
@@ -534,9 +606,10 @@ export const reconnectRoomHandler = createHandler(
                     return callback(response);
                 }
 
-                // Validate reconnection token
-                const participant = await roomManager.validateReconnectionToken(reconnectionToken, roomId);
-                if (!participant) {
+                // Get participant by token to validate and get their info
+                const participant = await roomManager.getParticipantByToken(reconnectionToken);
+                if (!participant || (!participant.createdRoom || participant.createdRoom.id !== roomId) &&
+                    !participant.participantRooms.some((room: Room) => room.id === roomId)) {
                     logger.warning('Invalid reconnection attempt', {
                         socketId: socket.id,
                         roomId,
@@ -554,8 +627,9 @@ export const reconnectRoomHandler = createHandler(
                     roomId,
                     socket.id,
                     {
+                        extUserId: participant.extUserId,
                         userName: participant.userName,
-                        isCreator: participant.isCreator
+                        userEmail: participant.userEmail
                     },
                     reconnectionToken
                 );
@@ -577,7 +651,8 @@ export const reconnectRoomHandler = createHandler(
                     ...socket.data,
                     roomId,
                     userName: participant.userName,
-                    isCreator: participant.isCreator
+                    userEmail: participant.userEmail,
+                    extUserId: participant.extUserId
                 };
 
                 // Record metrics
@@ -596,19 +671,21 @@ export const reconnectRoomHandler = createHandler(
                         timeoutDuration: result.room!.timeoutDuration
                     },
                     participant: {
-                        socketId: result.participant!.socketId,
+                        id: result.participant!.id,
+                        socketId: result.participant!.socketId!,
                         userName: result.participant!.userName,
-                        isCreator: result.participant!.isCreator,
-                        joinedAt: result.participant!.joinedAt.toISOString(),
-                        lastSeen: result.participant!.lastSeen.toISOString(),
+                        userEmail: result.participant!.userEmail,
+                        extUserId: result.participant!.extUserId,
+                        isCreator: result.participant!.creatorOf.length > 0,
+                        joinedAt: result.participant!.joinedAt?.toISOString() || new Date().toISOString(),
+                        lastSeen: result.participant!.lastSeen?.toISOString() || new Date().toISOString(),
                         reconnectionToken: result.participant!.reconnectionToken!,
                         mediaStatus: {
                             hasVideo: false,
                             hasAudio: false,
                             isScreenSharing: false
                         },
-                        id: "",
-                        roomId: result.participant!.roomId
+                        roomId: result.participant!.participantRooms[0]?.id || roomId
                     },
                     participants: roomManager.participantsToArray(result.room!.participants)
                 };
@@ -638,7 +715,6 @@ export const reconnectRoomHandler = createHandler(
                     success: false,
                     error: 'Internal server error while reconnecting to room'
                 };
-                // Safe callback invocation
                 if (callback && typeof callback === 'function') {
                     callback(response);
                 }

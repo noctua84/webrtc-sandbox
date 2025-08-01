@@ -1,11 +1,12 @@
 import {Participant as PrismaParticipant, PrismaClient, Room as PrismaRoom} from "@prisma/client";
 import type {Logger} from "../../types/log.types";
-import {v4 as uuidv4} from 'uuid';
 
 // Context types for operations
 export interface CreateRoomContext {
-    roomId: string;
-    creatorSocketId: string;
+    eventId: string;
+    creatorExtUserId: string;
+    creatorUserName: string;
+    creatorUserEmail: string;
     maxParticipants?: number;
     timeoutDuration?: number;
 }
@@ -13,25 +14,30 @@ export interface CreateRoomContext {
 export interface AddParticipantContext {
     roomId: string;
     socketId: string;
+    extUserId: string;
     userName: string;
-    isCreator: boolean;
+    userEmail: string;
     reconnectionToken?: string;
 }
 
 export interface UpdateParticipantContext {
-    socketId: string;
+    participantId: string;
+    socketId?: string;
     lastSeen?: Date;
     reconnectionToken?: string;
+    isConnected?: boolean;
 }
 
 export interface IRoomRepository {
     createRoom(context: CreateRoomContext): Promise<PrismaRoom>;
     getRoomById(roomId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null>;
+    getRoomByEventId(eventId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null>;
     addParticipant(context: AddParticipantContext): Promise<PrismaParticipant>;
     removeParticipant(socketId: string): Promise<boolean>;
     updateParticipant(context: UpdateParticipantContext): Promise<PrismaParticipant | null>;
-    getParticipantBySocketId(socketId: string): Promise<PrismaParticipant | null>;
-    getParticipantByToken(token: string): Promise<PrismaParticipant | null>;
+    updateParticipantSocket(participantId: string, socketId: string): Promise<PrismaParticipant | null>;
+    getParticipantBySocketId(socketId: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null>;
+    getParticipantByToken(token: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null>;
     updateRoomActivity(roomId: string): Promise<void>;
     deactivateRoom(roomId: string): Promise<boolean>;
     cleanupInactiveRooms(cutoffTime: Date): Promise<number>;
@@ -46,10 +52,12 @@ export interface IRoomRepository {
 export class RoomRepository implements IRoomRepository {
     private prisma: PrismaClient;
     private logger: Logger;
+    private config;
 
-    constructor(prisma: PrismaClient, logger: Logger) {
+    constructor(prisma: PrismaClient, logger: Logger, config: any) {
         this.prisma = prisma;
         this.logger = logger;
+        this.config = config;
     }
 
     /**
@@ -57,12 +65,28 @@ export class RoomRepository implements IRoomRepository {
      */
     async createRoom(context: CreateRoomContext): Promise<PrismaRoom> {
         try {
+            // Find or create the creator participant
+            let creator = await this.prisma.participant.findUnique({
+                where: { extUserId: context.creatorExtUserId }
+            });
+
+            if (!creator) {
+                creator = await this.prisma.participant.create({
+                    data: {
+                        extUserId: context.creatorExtUserId,
+                        userName: context.creatorUserName,
+                        userEmail: context.creatorUserEmail
+                    }
+                });
+            }
+
+            // Create the room
             const room = await this.prisma.room.create({
                 data: {
-                    id: context.roomId,
-                    creator: context.creatorSocketId,
+                    eventId: context.eventId,
+                    creatorId: creator.id,
                     maxParticipants: context.maxParticipants || 10,
-                    timeoutDuration: context.timeoutDuration || 3600000, // 1 hour
+                    timeoutDuration: context.timeoutDuration || 3600000,
                     isActive: true,
                     lastActivity: new Date()
                 }
@@ -70,37 +94,46 @@ export class RoomRepository implements IRoomRepository {
 
             this.logger.info('Room created successfully', {
                 roomId: room.id,
-                creator: room.creator
+                eventId: context.eventId,
+                creatorId: creator.id
             });
 
             return room;
         } catch (error) {
             this.logger.error('Failed to create room', {
                 error,
-                roomId: context.roomId,
-                creator: context.creatorSocketId
+                eventId: context.eventId,
+                creatorExtUserId: context.creatorExtUserId
             });
             throw error;
         }
     }
 
-    /**
-     * Get room by ID with participants
-     */
     async getRoomById(roomId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null> {
         try {
-            const room = await this.prisma.room.findUnique({
+            return await this.prisma.room.findUnique({
                 where: { id: roomId },
                 include: {
-                    participants: {
-                        orderBy: { joinedAt: 'asc' }
-                    }
+                    participants: true
                 }
             });
-
-            return room;
         } catch (error) {
-            this.logger.error('Failed to get room', { error, roomId });
+            this.logger.error('Failed to get room by ID', { error, roomId });
+            throw error;
+        }
+    }
+
+    async getRoomByEventId(eventId: string): Promise<(PrismaRoom & { participants: PrismaParticipant[] }) | null> {
+        try {
+            // The schema has eventId as a unique field on Room, so we can use findUnique
+            return await this.prisma.room.findUnique({
+                where: { eventId },
+                include: {
+                    participants: true
+                }
+            });
+        } catch (error) {
+            this.logger.error('Failed to get room by event ID', { error, eventId });
             throw error;
         }
     }
@@ -110,23 +143,51 @@ export class RoomRepository implements IRoomRepository {
      */
     async addParticipant(context: AddParticipantContext): Promise<PrismaParticipant> {
         try {
-            const participant = await this.prisma.participant.create({
-                data: {
-                    socketId: context.socketId,
-                    userName: context.userName,
-                    roomId: context.roomId,
-                    isCreator: context.isCreator,
-                    reconnectionToken: context.reconnectionToken || uuidv4(),
-                    joinedAt: new Date(),
-                    lastSeen: new Date()
-                }
+            // Find or create the participant
+            let participant = await this.prisma.participant.findUnique({
+                where: { extUserId: context.extUserId }
             });
 
+            if (participant) {
+                // Update existing participant - disconnect from other rooms first
+                participant = await this.prisma.participant.update({
+                    where: { id: participant.id },
+                    data: {
+                        socketId: context.socketId,
+                        userName: context.userName,
+                        userEmail: context.userEmail,
+                        reconnectionToken: context.reconnectionToken,
+                        isConnected: true,
+                        lastSeen: new Date(),
+                        participantRooms: {
+                            set: [{ id: context.roomId }] // Replace all rooms with just this one
+                        }
+                    }
+                });
+            } else {
+                // Create new participant
+                participant = await this.prisma.participant.create({
+                    data: {
+                        extUserId: context.extUserId,
+                        socketId: context.socketId,
+                        userName: context.userName,
+                        userEmail: context.userEmail,
+                        reconnectionToken: context.reconnectionToken,
+                        isConnected: true,
+                        joinedAt: new Date(),
+                        lastSeen: new Date(),
+                        participantRooms: {
+                            connect: { id: context.roomId }
+                        }
+                    }
+                });
+            }
+
             this.logger.info('Participant added successfully', {
+                participantId: participant.id,
                 socketId: context.socketId,
                 roomId: context.roomId,
-                userName: context.userName,
-                isCreator: context.isCreator
+                extUserId: context.extUserId
             });
 
             return participant;
@@ -134,7 +195,8 @@ export class RoomRepository implements IRoomRepository {
             this.logger.error('Failed to add participant', {
                 error,
                 socketId: context.socketId,
-                roomId: context.roomId
+                roomId: context.roomId,
+                extUserId: context.extUserId
             });
             throw error;
         }
@@ -145,16 +207,31 @@ export class RoomRepository implements IRoomRepository {
      */
     async removeParticipant(socketId: string): Promise<boolean> {
         try {
-            const result = await this.prisma.participant.deleteMany({
+            const participant = await this.prisma.participant.findUnique({
                 where: { socketId }
             });
 
-            const removed = result.count > 0;
-            if (removed) {
-                this.logger.info('Participant removed successfully', { socketId });
-            }
+            if (!participant) return false;
 
-            return removed;
+            // Disconnect from all rooms and update connection status
+            await this.prisma.participant.update({
+                where: { id: participant.id },
+                data: {
+                    socketId: null,
+                    isConnected: false,
+                    lastSeen: new Date(),
+                    participantRooms: {
+                        set: [] // Disconnect from all rooms
+                    }
+                }
+            });
+
+            this.logger.info('Participant removed successfully', {
+                participantId: participant.id,
+                socketId
+            });
+
+            return true;
         } catch (error) {
             this.logger.error('Failed to remove participant', { error, socketId });
             throw error;
@@ -168,6 +245,10 @@ export class RoomRepository implements IRoomRepository {
         try {
             const updateData: any = {};
 
+            if (context.socketId !== undefined) {
+                updateData.socketId = context.socketId;
+            }
+
             if (context.lastSeen) {
                 updateData.lastSeen = context.lastSeen;
             }
@@ -176,30 +257,55 @@ export class RoomRepository implements IRoomRepository {
                 updateData.reconnectionToken = context.reconnectionToken;
             }
 
+            if (context.isConnected !== undefined) {
+                updateData.isConnected = context.isConnected;
+            }
+
             if (Object.keys(updateData).length === 0) {
                 return null;
             }
 
             return await this.prisma.participant.update({
-                where: {socketId: context.socketId},
+                where: { id: context.participantId },
                 data: updateData
             });
         } catch (error) {
             this.logger.error('Failed to update participant', {
                 error,
-                socketId: context.socketId
+                participantId: context.participantId
             });
             return null;
         }
     }
 
-    /**
-     * Get participant by socket ID
-     */
-    async getParticipantBySocketId(socketId: string): Promise<PrismaParticipant | null> {
+    async updateParticipantSocket(participantId: string, socketId: string): Promise<PrismaParticipant | null> {
+        try {
+            return await this.prisma.participant.update({
+                where: { id: participantId },
+                data: {
+                    socketId,
+                    isConnected: true,
+                    lastSeen: new Date()
+                }
+            });
+        } catch (error) {
+            this.logger.error('Failed to update participant socket', {
+                error,
+                participantId,
+                socketId
+            });
+            return null;
+        }
+    }
+
+    async getParticipantBySocketId(socketId: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null> {
         try {
             return await this.prisma.participant.findUnique({
-                where: {socketId}
+                where: { socketId },
+                include: {
+                    createdRoom: true,
+                    participantRooms: true
+                }
             });
         } catch (error) {
             this.logger.error('Failed to get participant by socket ID', { error, socketId });
@@ -207,13 +313,14 @@ export class RoomRepository implements IRoomRepository {
         }
     }
 
-    /**
-     * Get participant by reconnection token
-     */
-    async getParticipantByToken(token: string): Promise<PrismaParticipant | null> {
+    async getParticipantByToken(token: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null> {
         try {
             return await this.prisma.participant.findUnique({
-                where: {reconnectionToken: token}
+                where: { reconnectionToken: token },
+                include: {
+                    createdRoom: true,
+                    participantRooms: true
+                }
             });
         } catch (error) {
             this.logger.error('Failed to get participant by token', { error });
@@ -241,7 +348,7 @@ export class RoomRepository implements IRoomRepository {
      */
     async deactivateRoom(roomId: string): Promise<boolean> {
         try {
-            const result = await this.prisma.room.update({
+            await this.prisma.room.update({
                 where: { id: roomId },
                 data: {
                     isActive: false,
@@ -262,19 +369,26 @@ export class RoomRepository implements IRoomRepository {
      */
     async cleanupInactiveRooms(cutoffTime: Date): Promise<number> {
         try {
-            // First, remove participants from inactive rooms
-            await this.prisma.participant.deleteMany({
+            // Disconnect participants from inactive rooms
+            await this.prisma.participant.updateMany({
                 where: {
-                    room: {
-                        OR: [
-                            { lastActivity: { lt: cutoffTime } },
-                            { isActive: false }
-                        ]
+                    participantRooms: {
+                        some: {
+                            OR: [
+                                { lastActivity: { lt: cutoffTime } },
+                                { isActive: false }
+                            ]
+                        }
                     }
+                },
+                data: {
+                    socketId: null,
+                    isConnected: false,
+                    lastSeen: new Date()
                 }
             });
 
-            // Then deactivate inactive rooms
+            // Deactivate inactive rooms
             const result = await this.prisma.room.updateMany({
                 where: {
                     AND: [
@@ -308,7 +422,12 @@ export class RoomRepository implements IRoomRepository {
                     select: { lastActivity: true }
                 }),
                 this.prisma.participant.count({
-                    where: { roomId }
+                    where: {
+                        participantRooms: {
+                            some: { id: roomId }
+                        },
+                        isConnected: true
+                    }
                 })
             ]);
 

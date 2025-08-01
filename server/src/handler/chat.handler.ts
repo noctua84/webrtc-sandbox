@@ -18,7 +18,7 @@ import {SocketConnectionContext} from "../types/socket.types";
 
 export const sendMessageHandler = createHandler(
     ['roomManager', 'logger', 'chatManager', 'metrics', 'io'],
-    (roomManager, logger, chatManager, metrics, io) => (
+    (roomManager, logger, chatManager, metrics, io) => async (
         socket: Socket,
         data: SendMessageRequest,
         callback: (response: any) => void
@@ -52,7 +52,7 @@ export const sendMessageHandler = createHandler(
             }
 
             // Validate room membership
-            const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+            const senderRoomId = await roomManager.getRoomBySocketId(socket.id);
             if (senderRoomId !== data.roomId) {
                 metrics.recordError('room', 'error', 'Sender not in room');
                 logger.error('Sender not in room', {
@@ -68,7 +68,7 @@ export const sendMessageHandler = createHandler(
                 return callback(response);
             }
 
-            const room = roomManager.getRoomById(data.roomId);
+            const room = await roomManager.getRoomById(data.roomId);
             if (!room) {
                 metrics.recordError('room', 'error', 'Room not found');
                 logger.error('Room not found', {
@@ -83,7 +83,7 @@ export const sendMessageHandler = createHandler(
                 return callback(response);
             }
 
-            const sender = room.participants.get(socket.id);
+            const sender = room.participants.find((p: any) => p.socketId === socket.id);
             if (!sender) {
                 const response: ErrorResponse = {
                     success: false,
@@ -92,15 +92,16 @@ export const sendMessageHandler = createHandler(
                 return callback(response);
             }
 
-            const message = chatManager.createMessage({
+            const message = await chatManager.createMessage({
                 roomId: data.roomId,
                 senderId: socket.id,
                 senderName: sender.userName,
                 content: data.content,
                 type: data.type || 'text', // Default to 'text' if not provided
                 mentions: data.mentions || [],
-                timestamp: new Date().toISOString()
-            })
+                timestamp: new Date().toISOString(),
+                ipAddress: socket.handshake.address || 'unknown'
+            });
 
             // Record metrics
             metrics.recordChatMessage(data.type, data.content.length);
@@ -147,7 +148,7 @@ export const sendMessageHandler = createHandler(
 export const editMessageHandler = createHandler(
     ['logger', 'schemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
     (logger, schemas, metrics, roomManager, io, chatManager) =>
-        (socket: Socket, data: EditMessageRequest, callback: (response: any) => void) => {
+        async (socket: Socket, data: EditMessageRequest, callback: (response: any) => void) => {
             const startTime = Date.now();
 
             metrics.recordSocketEvent('edit-message', 'inbound');
@@ -195,7 +196,7 @@ export const editMessageHandler = createHandler(
                 }
 
                 // Room membership validation
-                const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+                const senderRoomId = await roomManager.getRoomBySocketId(socket.id);
                 if (senderRoomId !== data.roomId) {
                     metrics.recordError('room', 'error', 'Sender not in room');
                     logger.error('Edit attempt by participant not in room', {
@@ -210,16 +211,37 @@ export const editMessageHandler = createHandler(
                     return callback(response);
                 }
 
+                // Get room and participant info
+                const room = await roomManager.getRoomById(data.roomId);
+                if (!room) {
+                    const response = {
+                        success: false,
+                        error: 'Room not found'
+                    };
+                    return callback(response);
+                }
+
+                const sender = room.participants.find((p: any) => p.socketId === socket.id);
+                if (!sender) {
+                    const response = {
+                        success: false,
+                        error: 'Sender not found in room'
+                    };
+                    return callback(response);
+                }
+
                 // Update message
                 const update_context: EditMessageContext = {
                     roomId: data.roomId,
                     messageId: data.messageId,
                     newContent: data.newContent,
-                    senderId: data.senderId || socket.id, // Use senderId if provided, otherwise use socket.id
-                    senderName: data.senderName || '',
-                    editedBy: data.senderId || socket.id // Use senderId if provided, otherwise use socket.id
-                }
-                const updatedMessage = chatManager.editMessage(update_context);
+                    senderId: socket.id,
+                    senderName: sender.userName,
+                    editedBy: socket.id,
+                    ipAddress: socket.handshake.address || 'unknown'
+                };
+
+                const updatedMessage = await chatManager.editMessage(update_context);
                 if (!updatedMessage) {
                     metrics.recordError('chat', 'error', 'Message not found or cannot be edited');
                     logger.error('Edit attempt for non-existent message', {
@@ -295,7 +317,7 @@ export const editMessageHandler = createHandler(
 export const deleteMessageHandler = createHandler(
     ['logger', 'schemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
     (logger, schemas, metrics, roomManager, io, chatManager) =>
-        (socket: Socket, data: DeleteMessageRequest, callback: (response: any) => void) => {
+        async (socket: Socket, data: DeleteMessageRequest, callback: (response: any) => void) => {
             const startTime = Date.now();
 
             metrics.recordSocketEvent('delete-message', 'inbound');
@@ -319,7 +341,7 @@ export const deleteMessageHandler = createHandler(
                 }
 
                 // Room membership validation
-                const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+                const senderRoomId = await roomManager.getRoomBySocketId(socket.id);
                 if (senderRoomId !== data.roomId) {
                     metrics.recordError('room', 'error', 'Sender not in room');
                     logger.error('Delete attempt by participant not in room', {
@@ -337,13 +359,12 @@ export const deleteMessageHandler = createHandler(
                 const context: DeleteMessageContext = {
                     roomId: data.roomId,
                     messageId: data.messageId,
-                    deletedBy: data.deletedBy
-                }
-
-
+                    deletedBy: socket.id,
+                    reason: 'user_request'
+                };
 
                 // Delete message
-                const deleted = chatManager.deleteMessage(context)
+                const deleted = await chatManager.deleteMessage(context);
                 if (!deleted) {
                     metrics.recordError('chat', 'error', 'Failed to delete message');
                     logger.error('Failed to delete message', {
@@ -401,7 +422,7 @@ export const deleteMessageHandler = createHandler(
 export const typingIndicatorHandler = createHandler(
     ['logger', 'schemas', 'metrics', 'roomManager', 'io'] as const,
     (logger, schemas, metrics, roomManager, io) =>
-        (socket: Socket, data: TypingIndicatorRequest, callback: (response: any) => void) => {
+        async (socket: Socket, data: TypingIndicatorRequest, callback: (response: any) => void) => {
             // Don't record socket events for typing - too noisy
             // But do record typing metrics
             metrics.recordTypingIndicator(data.isTyping ? 'start' : 'stop');
@@ -421,7 +442,7 @@ export const typingIndicatorHandler = createHandler(
                 }
 
                 // Room membership validation
-                const senderRoomId = roomManager.getRoomBySocketId(socket.id);
+                const senderRoomId = await roomManager.getRoomBySocketId(socket.id);
                 if (senderRoomId !== roomId) {
                     metrics.recordError('room', 'warning');
                     const response = {
@@ -432,8 +453,8 @@ export const typingIndicatorHandler = createHandler(
                 }
 
                 // Get sender info
-                const room = roomManager.getRoomById(roomId);
-                const sender = room?.participants.get(socket.id);
+                const room = await roomManager.getRoomById(roomId);
+                const sender = room?.participants.find((p: any) => p.socketId === socket.id);
 
                 if (!sender) {
                     metrics.recordError('room', 'error');
@@ -495,7 +516,7 @@ export const typingIndicatorHandler = createHandler(
 export const getChatHistoryHandler = createHandler(
     ['logger', 'chatManager', 'metrics', 'roomManager'] as const,
     (logger, chatManager, metrics, roomManager) =>
-        (socket: Socket, data: { roomId: string }, callback: (response: any) => void) => {
+        async (socket: Socket, data: { roomId: string }, callback: (response: any) => void) => {
             const startTime = Date.now();
 
             metrics.recordSocketEvent('get-chat-history', 'inbound');
@@ -521,7 +542,7 @@ export const getChatHistoryHandler = createHandler(
                 }
 
                 // Validate room membership
-                const requesterRoomId = roomManager.getRoomBySocketId(socket.id);
+                const requesterRoomId = await roomManager.getRoomBySocketId(socket.id);
                 if (requesterRoomId !== roomId) {
                     metrics.recordError('room', 'error', 'Requester not in room');
                     logger.error('Get chat history request by participant not in room', {
@@ -537,7 +558,7 @@ export const getChatHistoryHandler = createHandler(
                 }
 
                 // Get chat history
-                const messages = chatManager.getRoomMessages(roomId, {
+                const messages = await chatManager.getRoomMessages(roomId, {
                     offset: 0,
                     limit: undefined, // No limit for history retrieval
                     includeDeleted: false,

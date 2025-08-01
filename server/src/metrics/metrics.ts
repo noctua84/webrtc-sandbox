@@ -204,6 +204,12 @@ export const errorRate = new Counter({
     labelNames: ['type', 'severity', 'reason'] as const // type: 'socket', 'webrtc', 'database', 'validation'
 });
 
+export const httpErrorRate = new Counter({
+    name: 'webrtc_http_errors_total',
+    help: 'HTTP error rate',
+    labelNames: ['status_code', 'method', 'path', 'reason'] as const // status_code: '400', '500', etc.; method: 'GET', 'POST', etc.
+});
+
 // ================================
 // Custom Summary Metrics
 // ================================
@@ -211,6 +217,6 @@ export const errorRate = new Counter({
 export const requestProcessingTime = new Summary({
     name: 'webrtc_request_processing_duration_seconds',
     help: 'Request processing time',
-    labelNames: ['method'] as const,
+    labelNames: ['method', 'path', 'status_code'] as const,
     percentiles: [0.5, 0.9, 0.95, 0.99]
 });

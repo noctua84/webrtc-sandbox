@@ -4,7 +4,7 @@ import {createAppContainer} from "./di";
 import {Server} from "socket.io";
 import cors from "cors";
 import helmet from "helmet";
-import {ClientToServerEvents, ServerToClientEvents} from "./types/event.types";
+import {ClientToServerEvents, ServerToClientEvents} from "./types/socket.event.types";
 import {setupMetricsEndpoint} from "./metrics/endpoints";
 import {registerChatHandlers} from "./handler/chat.handler";
 import {SocketConnectionContext} from "./types/socket.types";
@@ -12,6 +12,7 @@ import {registerRoomHandlers} from "./handler/room.handler";
 import {handleDisconnect} from "./handler/connection.handler";
 import {registerWebRTCHandlers} from "./handler/webrtc.handler";
 import {registerMediaHandlers} from "./handler/media.handler";
+import {createEventEndpoints} from "./event/endpoints";
 
 let isShuttingDown = false;
 let prismaInstance: any;
@@ -54,7 +55,9 @@ try {
 
 // API routes:
 setupMetricsEndpoint(app, container);
+app.use('/api', createEventEndpoints(container));
 
+// WebSocket connection handling
 io.on('connection', socket => {
     logger.info(`New socket connection: ${socket.id}`);
 
@@ -132,7 +135,6 @@ io.on('error', (error) => {
         stack: error.stack
     });
 });
-
 
 // Shutdown handling
 async function gracefulShutdown(signal: string) {

@@ -29,7 +29,7 @@ import {
     totalRooms,
     typingIndicators, uptime,
     stateLatency,
-    stateOperations
+    stateOperations, httpErrorRate
 } from "./metrics";
 
 export class MetricsCollector {
@@ -44,6 +44,15 @@ export class MetricsCollector {
         memoryUsage.labels('heapTotal').set(memUsage.heapTotal);
         memoryUsage.labels('heapUsed').set(memUsage.heapUsed);
         memoryUsage.labels('external').set(memUsage.external);
+    }
+
+    // Record HTTP request metrics
+    recordHttpRequest(method: string, path: string, statusCode: number, duration: number): void {
+        requestProcessingTime.labels(method, path, statusCode.toString()).observe(duration / 1000); // Convert to seconds
+    }
+
+    recordHttpError(method: string, path: string, reason: string, statusCode: number): void {
+        httpErrorRate.labels(method, statusCode.toString(), path, reason).inc();
     }
 
     // Record room metrics

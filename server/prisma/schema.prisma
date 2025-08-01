@@ -20,24 +20,22 @@ datasource db {
 
 model Room {
   id              String   @id @default(cuid())
-  eventId         String?  @unique // Reference to external event system
-  creator         String // Creator's socket ID initially, but can be transferred
   createdAt       DateTime @default(now())
   lastActivity    DateTime @default(now())
   maxParticipants Int      @default(10)
   timeoutDuration Int      @default(3600000) // 1 hour in milliseconds
   isActive        Boolean  @default(true)
 
-  // Event-specific fields for pre-scheduled rooms
-  scheduledStartTime DateTime? // When the event is scheduled to start
-  eventTitle         String? // Title of the event for display
-  eventDescription   String? // Description of the event
-  isPreScheduled     Boolean   @default(false) // Whether this room was created for a scheduled event
-  hostUserId         String? // Host user ID from external system (not socket ID)
-  hostUserName       String? // Host display name from external system
+  // Required event association - Room MUST have an event
+  eventId String @unique
+  event   Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  // Required creator - Room MUST have a creator
+  creatorId String      @unique
+  creator   Participant @relation("RoomCreator", fields: [creatorId], references: [id])
 
   // Relations
-  participants   Participant[]
+  participants   Participant[]   @relation("RoomParticipants")
   chatMessages   ChatMessage[]
   systemMessages SystemMessage[]
 
@@ -45,37 +43,106 @@ model Room {
   @@index([lastActivity])
   @@index([createdAt])
   @@index([eventId])
-  @@index([isPreScheduled])
-  @@index([scheduledStartTime])
-  // Indexes for performance
+  @@index([creatorId])
   @@map("rooms")
 }
 
 model Participant {
   id                String   @id @default(cuid())
-  socketId          String   @unique
+  extUserId         String // External platform user ID - required for event integration
+  socketId          String?  @unique // Set when participant connects via WebSocket
   userName          String
-  isCreator         Boolean  @default(false)
+  userEmail         String // Required for event participant identification
   joinedAt          DateTime @default(now())
   lastSeen          DateTime @default(now())
   reconnectionToken String?  @unique
+  isConnected       Boolean  @default(false) // WebSocket connection status
 
-  // Note: Volatile media states (hasVideo, hasAudio, isScreenSharing, isConnected)
+  // Note: Volatile media states (hasVideo, hasAudio, isScreenSharing)
   // are stored in Redis/memory for performance - not in database
 
-  // Relations
-  roomId String
-  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  // Room relations - A participant can be creator of ONE room OR participant in multiple rooms
+  // But NOT both creator and participant of the same room
+  createdRoom      Room?  @relation("RoomCreator")
+  participantRooms Room[] @relation("RoomParticipants")
 
-  // Chat relations - Updated to remove editor relation since we track edits in history
+  // Event participation - automatically linked through room participation
+  // When participant joins room, they're participating in the event that room belongs to
+  eventBookings EventBooking[] @relation("ParticipantBookings")
+
+  // Chat relations
   sentMessages     ChatMessage[]     @relation("MessageSender")
   reactions        MessageReaction[]
   typingIndicators TypingIndicator[]
 
-  @@index([roomId])
+  @@unique([extUserId]) // One participant record per platform user
   @@index([socketId])
   @@index([reconnectionToken])
+  @@index([extUserId])
+  @@index([isConnected])
   @@map("participants")
+}
+
+// ================================
+// Event System Models
+// ================================
+
+model Event {
+  id                 String      @id @default(cuid())
+  eventId            String      @unique // External platform event ID
+  eventTitle         String
+  eventDescription   String?     @db.Text
+  scheduledStartTime DateTime
+  hostUserId         String // External platform user ID
+  hostUserName       String
+  maxParticipants    Int         @default(10)
+  timeoutDuration    Int         @default(7200000) // 2 hours default
+  status             EventStatus @default(SCHEDULED)
+
+  // Room relationship - Event can exist without a room (one-to-one relationship)
+  room Room?
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  activatedAt DateTime? // When event became active
+  closedAt    DateTime? // When event was closed
+  closedBy    String? // User ID who closed the event
+
+  // Relations
+  bookings EventBooking[]
+
+  @@index([eventId])
+  @@index([hostUserId])
+  @@index([status])
+  @@index([scheduledStartTime])
+  @@index([createdAt])
+  @@map("events")
+}
+
+model EventBooking {
+  id        String   @id @default(cuid())
+  eventId   String
+  userId    String // External platform user ID
+  userName  String
+  userEmail String
+  bookedAt  DateTime @default(now())
+
+  // Status tracking
+  isActive Boolean   @default(true) // false if booking was cancelled
+  joinedAt DateTime? // When user actually joined the room
+  leftAt   DateTime? // When user left the room
+
+  // Relations
+  event       Event        @relation(fields: [eventId], references: [eventId], onDelete: Cascade)
+  participant Participant? @relation("ParticipantBookings", fields: [userId], references: [extUserId])
+
+  // Ensure one booking per user per event
+  @@unique([eventId, userId])
+  @@index([eventId])
+  @@index([userId])
+  @@index([bookedAt])
+  @@map("event_bookings")
 }
 
 // ================================
@@ -279,6 +346,55 @@ model ConnectionLog {
   @@map("connection_logs")
 }
 
+model EventActivity {
+  id            String   @id @default(cuid())
+  eventId       String
+  activityType  String // 'booking_created', 'booking_cancelled', 'participant_joined', 'participant_left', 'event_activated', 'event_closed'
+  userId        String? // External platform user ID if applicable
+  userName      String? // User name if applicable
+  participantId String? // Internal participant ID if applicable
+  timestamp     DateTime @default(now())
+  metadata      Json? // Additional event-specific data
+
+  @@index([eventId, timestamp])
+  @@index([activityType])
+  @@index([userId])
+  @@map("event_activities")
+}
+
+model EventMetrics {
+  id      String @id @default(cuid())
+  eventId String @unique
+
+  // Booking metrics
+  totalBookings       Int @default(0)
+  cancelledBookings   Int @default(0)
+  actualJoins         Int @default(0) // How many actually joined
+  peakConcurrentUsers Int @default(0)
+
+  // Duration metrics
+  actualStartTime DateTime?
+  actualEndTime   DateTime?
+  totalDurationMs Int? // Actual duration in milliseconds
+
+  // Engagement metrics
+  totalMessagesExchanged Int  @default(0)
+  averageSessionDuration Int? // Average time participants stayed
+  connectionIssues       Int  @default(0)
+
+  // Quality metrics
+  averageLatency    Float? // Average connection latency
+  reconnectionCount Int    @default(0)
+  dropoutRate       Float? // Percentage who left early
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([eventId])
+  @@map("event_metrics")
+}
+
 // ================================
 // TURN Server Management
 // ================================
@@ -383,4 +499,11 @@ enum IceConnectionState {
   FAILED
   DISCONNECTED
   CLOSED
+}
+
+enum EventStatus {
+  SCHEDULED // Event is scheduled, room not yet active
+  ACTIVE // Event is running, room is active
+  CLOSED // Event is closed, room is inaccessible
+  CANCELLED // Event was cancelled before starting
 }

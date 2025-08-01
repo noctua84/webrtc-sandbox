@@ -62,7 +62,7 @@ export class MessageRepository implements IChatRepository {
                         timestamp: timestamp,
                         isEdited: false,
                         isDeleted: false,
-                        ipAddress: context.ipAddress,
+                        ipAddress: context.ipAddress || 'unknown',
                         messageHash: hash,
                         type: context.type || MessageType.TEXT,
                     },
@@ -71,13 +71,14 @@ export class MessageRepository implements IChatRepository {
                             include: {
                                 participant: {
                                     select: {
-                                        socketId: true
+                                        socketId: true,
+                                        userName: true
                                     }
                                 }
                             }
                         }
                     }
-                })
+                });
 
                 await tx.chatMessageHistory.create({
                     data: {
@@ -93,10 +94,10 @@ export class MessageRepository implements IChatRepository {
                         ipAddress: msg.ipAddress,
                         contentHash: msg.messageHash
                     }
-                })
+                });
 
                 return msg;
-            })
+            });
 
             this.logger.info(`Message added: ${newMessage.id}`, {messageId: newMessage.id, roomId: newMessage.roomId});
 
@@ -177,9 +178,7 @@ export class MessageRepository implements IChatRepository {
                         content: context.newContent,
                         editedAt: timestamp,
                         isEdited: true,
-                        ipAddress: context.ipAddress,
-                        senderId: context.senderId,
-                        roomId: context.roomId,
+                        ipAddress: context.ipAddress || 'unknown',
                         messageHash: messageHash,
                         editCount: { increment: 1 }
                     },
@@ -188,7 +187,8 @@ export class MessageRepository implements IChatRepository {
                             include: {
                                 participant: {
                                     select: {
-                                        socketId: true
+                                        socketId: true,
+                                        userName: true
                                     }
                                 }
                             }
@@ -204,11 +204,11 @@ export class MessageRepository implements IChatRepository {
                         senderId: currentMessage.senderId,
                         actionType: MessageActionType.EDITED,
                         actionTimestamp: timestamp,
-                        actionBy: currentMessage.senderId,
+                        actionBy: context.editedBy,
                         previousContent: currentMessage.content,
                         newContent: context.newContent,
                         actionReason: null,
-                        ipAddress: currentMessage.ipAddress,
+                        ipAddress: context.ipAddress || 'unknown',
                         contentHash: updatedMsg.messageHash
                     }
                 });
@@ -222,11 +222,10 @@ export class MessageRepository implements IChatRepository {
             this.logger.error(`Failed to update message ${context.messageId} in room ${context.roomId}: ${error.message}`, {error, roomId: context.roomId, messageId: context.messageId});
             return null;
         }
-
     }
 
     // Add reaction to message
-    async addReaction(roomId: string, messageId: string, emoji: string, userId: string): Promise<MessageReaction | null> {
+    async addReaction(roomId: string, messageId: string, emoji: string, participantId: string): Promise<MessageReaction | null> {
         const timestamp = new Date();
 
         try {
@@ -236,7 +235,7 @@ export class MessageRepository implements IChatRepository {
                     where: {
                         messageId,
                         emoji,
-                        participantId: userId
+                        participantId: participantId
                     }
                 });
 
@@ -252,24 +251,23 @@ export class MessageRepository implements IChatRepository {
                         data: {
                             messageId,
                             emoji,
-                            participantId: userId,
+                            participantId: participantId,
                             count: 1
                         }
                     });
                 }
             });
 
-            this.logger.info(`Reaction added to message ${messageId}`, {emoji, userId, roomId});
+            this.logger.info(`Reaction added to message ${messageId}`, {emoji, participantId, roomId});
             return reaction;
         } catch (error: any) {
-            this.logger.error(`Failed to add reaction to message ${messageId}: ${error.message}`, {error, roomId, messageId, emoji, userId});
+            this.logger.error(`Failed to add reaction to message ${messageId}: ${error.message}`, {error, roomId, messageId, emoji, participantId});
             return null;
         }
-
     }
 
     // Remove reaction from message
-    async removeReaction(roomId: string, messageId: string, emoji: string, userId: string): Promise<boolean> {
+    async removeReaction(roomId: string, messageId: string, emoji: string, participantId: string): Promise<boolean> {
         const timestamp = new Date();
 
         try {
@@ -279,7 +277,7 @@ export class MessageRepository implements IChatRepository {
                     where: {
                         messageId,
                         emoji,
-                        participantId: userId
+                        participantId: participantId
                     }
                 });
 
@@ -300,10 +298,10 @@ export class MessageRepository implements IChatRepository {
                 }
             });
 
-            this.logger.info(`Reaction removed from message ${messageId}`, {emoji, userId, roomId});
+            this.logger.info(`Reaction removed from message ${messageId}`, {emoji, participantId, roomId});
             return true;
         } catch (error: any) {
-            this.logger.error(`Failed to remove reaction from message ${messageId}: ${error.message}`, {error, roomId, messageId, emoji, userId});
+            this.logger.error(`Failed to remove reaction from message ${messageId}: ${error.message}`, {error, roomId, messageId, emoji, participantId});
             return false;
         }
     }
@@ -334,22 +332,22 @@ export class MessageRepository implements IChatRepository {
                 });
 
                 if (!msg) {
-                    this.logger.error(`Failed to delete message ${existingMessage.id}`, {roomId: existingMessage.roomId, messageId: existingMessage.messageId});
+                    this.logger.error(`Failed to delete message ${existingMessage.id}`, {roomId: existingMessage.roomId, messageId: existingMessage.id});
                     throw new Error('Failed to delete message');
                 }
 
                 // Create history entry for deletion
                 await tx.chatMessageHistory.create({
                     data: {
-                        messageId: msg.messageId,
+                        messageId: msg.id,
                         roomId: msg.roomId,
                         senderId: existingMessage.senderId,
                         actionType: MessageActionType.DELETED,
                         actionTimestamp: timestamp,
-                        actionBy: existingMessage.senderId,
+                        actionBy: context.deletedBy,
                         previousContent: existingMessage.content,
                         newContent: null,
-                        actionReason: null,
+                        actionReason: context.reason || 'user_request',
                         ipAddress: existingMessage.ipAddress,
                         contentHash: existingMessage.messageHash
                     }
