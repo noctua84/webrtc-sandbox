@@ -1,4 +1,10 @@
-import { PrismaClient, Event as PrismaEvent, EventBooking as PrismaEventBooking, EventStatus } from "@prisma/client";
+import {
+    PrismaClient,
+    Event as PrismaEvent,
+    EventBooking as PrismaEventBooking,
+    EventStatus,
+    Participant
+} from "@prisma/client";
 import { Logger } from "../../types/log.types";
 import {
     CreateEventContext,
@@ -69,6 +75,8 @@ export class EventRepository implements IEventRepository {
 
     async createEvent(context: CreateEventContext): Promise<EventEntity> {
         try {
+            let host: Participant;
+
             this.logger.info('Creating event in database', {
                 eventId: context.eventId,
                 hostUserId: context.hostUserId
@@ -89,14 +97,27 @@ export class EventRepository implements IEventRepository {
                 }
             });
 
-            // Create the host participant
-            const host = await this.prisma.participant.create({
-                data: {
-                    extUserId: context.hostUserId,
-                    userName: context.hostUserName,
-                    userEmail: context.hostEmail || ""
-                }
+            // Check if host participant already exists
+            const existing = await this.prisma.participant.findUnique({
+                where: { extUserId: context.hostUserId }
             });
+
+            if (existing) {
+                host = existing;
+            } else {
+                // Create participant if not exists
+                this.logger.info('Creating host participant', {
+                    userId: context.hostUserId,
+                    userName: context.hostUserName
+                });
+                host = await this.prisma.participant.create({
+                    data: {
+                        extUserId: context.hostUserId,
+                        userName: context.hostUserName,
+                        userEmail: context.hostEmail || ""
+                    }
+                });
+            }
 
             // Create the room for the event using eventId string (not internal id)
             const room = await this.prisma.room.create({
@@ -580,9 +601,11 @@ export class EventRepository implements IEventRepository {
                     isConnected: true,
                     OR: [
                         {
-                            createdRoom: {
-                                event: {
-                                    status: 'ACTIVE'
+                            createdRooms: {
+                                some: {
+                                    event: {
+                                        status: 'ACTIVE'
+                                    }
                                 }
                             }
                         },

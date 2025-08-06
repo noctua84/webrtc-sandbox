@@ -1,14 +1,12 @@
-import { Socket, Server } from "socket.io";
+import { Socket } from "socket.io";
 import { Container } from "../di";
 import {
-    CreateRoomRequest,
     JoinRoomRequest,
     LeaveRoomRequest,
     ReconnectRoomRequest,
     GetRoomInfoRequest
 } from "../types/room.types";
 import {
-    CreateRoomResponse,
     JoinRoomResponse,
     LeaveRoomResponse,
     ReconnectRoomResponse,
@@ -16,200 +14,8 @@ import {
     ErrorResponse,
     RoomUpdateEvent
 } from "../types/webrtc.types";
-import { v4 as uuidv4 } from 'uuid';
 import { createHandler } from "../di";
 import {Room} from "@prisma/client";
-
-// ================================
-// CREATE ROOM HANDLER
-// ================================
-
-export const createRoomHandler = createHandler(
-    ['logger', 'metrics', 'roomManager', 'io'] as const,
-    (logger, metrics, roomManager, io) =>
-        async (socket: Socket, data: CreateRoomRequest, callback: (response: CreateRoomResponse | ErrorResponse) => void) => {
-            const startTime = Date.now();
-
-            try {
-                logger.info('Received create-room request', {
-                    socketId: socket.id,
-                    data
-                });
-
-                const { eventId, userName, userEmail, reconnectionToken } = data;
-
-                // Validate input - eventId is now required
-                if (!eventId) {
-                    metrics.recordError('room', 'error', 'Event ID is required for room creation');
-                    logger.error('Event ID is required', { socketId: socket.id });
-                    const response: ErrorResponse = {
-                        success: false,
-                        error: 'Event ID is required for room creation'
-                    };
-                    return callback(response);
-                }
-
-                if (!userName || userName.trim().length === 0) {
-                    metrics.recordError('room', 'error', 'Invalid username provided');
-                    logger.error('Invalid userName provided', { socketId: socket.id, userName });
-                    const response: ErrorResponse = {
-                        success: false,
-                        error: 'Username is required and cannot be empty'
-                    };
-                    return callback(response);
-                }
-
-                if (!userEmail || userEmail.trim().length === 0) {
-                    metrics.recordError('room', 'error', 'Invalid email provided');
-                    logger.error('Invalid userEmail provided', { socketId: socket.id, userEmail });
-                    const response: ErrorResponse = {
-                        success: false,
-                        error: 'Email is required and cannot be empty'
-                    };
-                    return callback(response);
-                }
-
-                // Extract extUserId from socket or data
-                const extUserId = socket.data?.userId || socket.data?.extUserId || socket.id;
-
-                // Check if room already exists for this event
-                let room = await roomManager.getRoomByEventId(eventId);
-                let isNewRoom = false;
-
-                if (!room) {
-                    // Create new room for the event
-                    const createResult = await roomManager.createRoomForEvent(
-                        eventId,
-                        extUserId,
-                        { userName: userName.trim(), userEmail: userEmail.trim() }
-                    );
-
-                    if (!createResult.success) {
-                        const response: ErrorResponse = {
-                            success: false,
-                            error: createResult.error || 'Failed to create room'
-                        };
-                        return callback(response);
-                    }
-                    room = createResult.room!;
-                    isNewRoom = true;
-                } else if (!room.isActive) {
-                    logger.error('Room exists but is not active', { eventId, socketId: socket.id });
-                    const response: ErrorResponse = {
-                        success: false,
-                        error: 'Room exists but is no longer active'
-                    };
-                    return callback(response);
-                }
-
-                // Add creator as participant
-                const participantResult = await roomManager.addParticipantToRoom(
-                    room.id,
-                    socket.id,
-                    {
-                        extUserId,
-                        userName: userName.trim(),
-                        userEmail: userEmail.trim()
-                    },
-                    reconnectionToken
-                );
-
-                if (!participantResult.success) {
-                    logger.error('Failed to add creator to room', {
-                        roomId: room.id,
-                        socketId: socket.id,
-                        error: participantResult.error
-                    });
-                    const response: ErrorResponse = {
-                        success: false,
-                        error: participantResult.error || 'Failed to join room'
-                    };
-                    return callback(response);
-                }
-
-                // Join socket to room channel
-                socket.join(room.id);
-                logger.info('Socket joined room channel', { socketId: socket.id, roomId: room.id });
-
-                // Store socket data
-                socket.data = {
-                    ...socket.data,
-                    roomId: room.id,
-                    userName: userName.trim(),
-                    userEmail: userEmail.trim(),
-                    extUserId,
-                    eventId
-                };
-
-                // Record metrics
-                const processingTime = Date.now() - startTime;
-                metrics.recordSocketEvent('create-room', 'outbound', processingTime);
-
-                const response: CreateRoomResponse = {
-                    success: true,
-                    room: {
-                        id: room.id,
-                        createdAt: room.createdAt.toISOString(),
-                        lastActivity: room.lastActivity.toISOString(),
-                        participantCount: room.participants.length,
-                        maxParticipants: room.maxParticipants,
-                        isActive: room.isActive,
-                        timeoutDuration: room.timeoutDuration
-                    },
-                    participant: {
-                        id: participantResult.participant!.id,
-                        socketId: participantResult.participant!.socketId!,
-                        userName: participantResult.participant!.userName,
-                        userEmail: participantResult.participant!.userEmail,
-                        extUserId: participantResult.participant!.extUserId,
-                        isCreator: participantResult.participant!.creatorOf.length > 0,
-                        joinedAt: participantResult.participant!.joinedAt?.toISOString() || new Date().toISOString(),
-                        lastSeen: participantResult.participant!.lastSeen?.toISOString() || new Date().toISOString(),
-                        reconnectionToken: participantResult.participant!.reconnectionToken!,
-                        mediaStatus: {
-                            hasVideo: false,
-                            hasAudio: false,
-                            isScreenSharing: false
-                        },
-                        roomId: room.id
-                    },
-                    reconnectionToken: participantResult.participant!.reconnectionToken!
-                };
-
-                logger.success('Room created successfully', response);
-                callback(response);
-
-                // Broadcast room creation to other participants if rejoining existing room
-                if (!isNewRoom) {
-                    const updateEvent: RoomUpdateEvent = {
-                        roomId: room.id,
-                        participants: roomManager.participantsToArray(participantResult.room!.participants),
-                        event: participantResult.isReconnection ? 'participant-reconnected' : 'participant-joined',
-                        participant: response.participant
-                    };
-                    socket.to(room.id).emit('room-updated', updateEvent);
-                }
-
-            } catch (error: any) {
-                const err = error as Error;
-                metrics.recordError('room', 'error', err.message);
-                logger.error('Error handling create-room', {
-                    socketId: socket.id,
-                    error: err.message,
-                    stack: err.stack
-                });
-
-                const response: ErrorResponse = {
-                    success: false,
-                    error: 'Internal server error while creating room'
-                };
-
-                if (callback && typeof callback === 'function') {
-                    callback(response);
-                }
-            }
-        }
-);
 
 // ================================
 // JOIN ROOM HANDLER
@@ -732,14 +538,12 @@ export function registerRoomHandlers(container: Container, context: any) {
     logger.info('Registering room handlers', { socketId: context.connectionId });
 
     // Convert handlers to actual functions using the container
-    const createRoom = createRoomHandler(container);
     const joinRoom = joinRoomHandler(container);
     const leaveRoom = leaveRoomHandler(container);
     const getRoomInfo = getRoomInfoHandler(container);
     const reconnectRoom = reconnectRoomHandler(container);
 
     // Register socket event listeners
-    context.socket.on('create-room', createRoom);
     context.socket.on('join-room', joinRoom);
     context.socket.on('leave-room', leaveRoom);
     context.socket.on('get-room-info', getRoomInfo);
@@ -758,7 +562,6 @@ export function registerRoomHandlers(container: Container, context: any) {
 
     // Return handlers for testing or cleanup
     return {
-        createRoom,
         joinRoom,
         leaveRoom,
         getRoomInfo,

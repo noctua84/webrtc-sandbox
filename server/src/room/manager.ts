@@ -181,8 +181,8 @@ export class RoomManager implements IRoomManager {
             if (reconnectionToken) {
                 const existingParticipant = await this.repository.getParticipantByToken(reconnectionToken);
                 if (existingParticipant && (
-                    existingParticipant.createdRoom?.id === roomId ||
-                    existingParticipant.participantRooms.some(pr => pr.id === roomId)
+                    existingParticipant.createdRooms?.id === roomId ||
+                    existingParticipant.participantRooms.some((pr: any) => pr.id === roomId)
                 )) {
                     // Update existing participant with new socket
                     await this.repository.updateParticipantSocket(existingParticipant.id, socketId);
@@ -304,14 +304,9 @@ export class RoomManager implements IRoomManager {
      * Get room ID by socket ID
      */
     async getRoomBySocketId(socketId: string): Promise<string | null> {
-        try {
-            const participant = await this.repository.getParticipantBySocketId(socketId);
-            // Return the first room ID if participant is in any rooms
-            return participant?.participantRooms[0]?.id || participant?.createdRoom?.id || null;
-        } catch (error) {
-            this.logger.error('Failed to get room by socket ID', { error, socketId });
-            return null;
-        }
+        // TODO: refactor this to use event id rather than socket ID
+        // TODO: remove the socket logic since rooms are precreated and their join link is available.
+        return "deprecated"; // This method is deprecated in the new schema
     }
 
     /**
@@ -343,9 +338,9 @@ export class RoomManager implements IRoomManager {
             const participant = await this.repository.getParticipantByToken(token);
 
             if (participant && (
-                participant.createdRoom?.id === roomId ||
-                participant.participantRooms.some(room => room.id === roomId)
-            )) {
+                participant?.createdRooms?.id === roomId) ||
+                participant?.participantRooms.some((room: any) => room.id === roomId)
+            ) {
                 return participant;
             }
 

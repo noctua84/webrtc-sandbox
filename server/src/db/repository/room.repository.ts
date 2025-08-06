@@ -36,8 +36,8 @@ export interface IRoomRepository {
     removeParticipant(socketId: string): Promise<boolean>;
     updateParticipant(context: UpdateParticipantContext): Promise<PrismaParticipant | null>;
     updateParticipantSocket(participantId: string, socketId: string): Promise<PrismaParticipant | null>;
-    getParticipantBySocketId(socketId: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null>;
-    getParticipantByToken(token: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null>;
+    getParticipantBySocketId(socketId: string): any;
+    getParticipantByToken(token: string): any;
     updateRoomActivity(roomId: string): Promise<void>;
     deactivateRoom(roomId: string): Promise<boolean>;
     cleanupInactiveRooms(cutoffTime: Date): Promise<number>;
@@ -298,12 +298,12 @@ export class RoomRepository implements IRoomRepository {
         }
     }
 
-    async getParticipantBySocketId(socketId: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null> {
+    async getParticipantBySocketId(socketId: string) {
         try {
             return await this.prisma.participant.findUnique({
                 where: { socketId },
                 include: {
-                    createdRoom: true,
+                    createdRooms: true,
                     participantRooms: true
                 }
             });
@@ -313,12 +313,12 @@ export class RoomRepository implements IRoomRepository {
         }
     }
 
-    async getParticipantByToken(token: string): Promise<(PrismaParticipant & { createdRoom: PrismaRoom | null; participantRooms: PrismaRoom[] }) | null> {
+    async getParticipantByToken(token: string) {
         try {
             return await this.prisma.participant.findUnique({
                 where: { reconnectionToken: token },
                 include: {
-                    createdRoom: true,
+                    createdRooms: true,
                     participantRooms: true
                 }
             });

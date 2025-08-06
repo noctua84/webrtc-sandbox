@@ -31,7 +31,7 @@ model Room {
   event   Event  @relation(fields: [eventId], references: [id], onDelete: Cascade)
 
   // Required creator - Room MUST have a creator
-  creatorId String      @unique
+  creatorId String
   creator   Participant @relation("RoomCreator", fields: [creatorId], references: [id])
 
   // Relations
@@ -63,7 +63,7 @@ model Participant {
 
   // Room relations - A participant can be creator of ONE room OR participant in multiple rooms
   // But NOT both creator and participant of the same room
-  createdRoom      Room?  @relation("RoomCreator")
+  createdRooms     Room[] @relation("RoomCreator")
   participantRooms Room[] @relation("RoomParticipants")
 
   // Event participation - automatically linked through room participation
