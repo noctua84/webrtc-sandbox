@@ -61,13 +61,13 @@ export function createEventEndpoints(container: Container): Router {
             const duration = Date.now() - startTime;
             metrics.recordHttpRequest('POST', '/events', 201, duration);
 
-            res.status(201).json(result);
+            return res.status(201).json(result);
 
         } catch (error) {
             const err = error as Error;
             logger.error('Event creation error', { error: err.message, stack: err.stack });
             metrics.recordHttpError('POST', '/events', 'server_error', 500);
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: 'Internal server error',
                 code: 'INTERNAL_ERROR'
@@ -127,13 +127,13 @@ export function createEventEndpoints(container: Container): Router {
             const duration = Date.now() - startTime;
             metrics.recordHttpRequest('POST', '/events/:eventId/book', 201, duration);
 
-            res.status(201).json(result);
+            return res.status(201).json(result);
 
         } catch (error) {
             const err = error as Error;
             logger.error('Booking error', { error: err.message, eventId: req.params.eventId });
             metrics.recordHttpError('POST', '/events/:eventId/book', 'server_error', 500);
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: 'Internal server error',
                 code: 'INTERNAL_ERROR'
@@ -180,13 +180,13 @@ export function createEventEndpoints(container: Container): Router {
 
             const duration = Date.now() - startTime;
             metrics.recordHttpRequest('DELETE', '/events/:eventId/book', 200, duration);
-            res.json({ success: true });
+            return res.json({ success: true });
 
         } catch (error) {
             const err = error as Error;
             logger.error('Cancellation error', { error: err.message, eventId: req.params.eventId });
             metrics.recordHttpError('DELETE', '/events/:eventId/book', 'server_error', 500);
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: 'Internal server error',
                 code: 'INTERNAL_ERROR'
@@ -236,13 +236,13 @@ export function createEventEndpoints(container: Container): Router {
             });
 
             metrics.recordHttpRequest('POST', '/events/:eventId/close', 200, Date.now() - startTime);
-            res.json(result);
+            return res.json(result);
 
         } catch (error) {
             const err = error as Error;
             logger.error('Event close error', { error: err.message, eventId: req.params.eventId });
             metrics.recordHttpError('POST', '/events/:eventId/close', 'server_error', 500);
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: 'Internal server error',
                 code: 'INTERNAL_ERROR'
@@ -259,7 +259,7 @@ export function createEventEndpoints(container: Container): Router {
             const startTime = Date.now();
 
             const { eventId } = req.params;
-            const event = await eventManager.getEventDetails(eventId);
+            const event = await eventManager.getEventDetails(eventId as string);
 
             if (!event) {
                 metrics.recordHttpError('GET', '/events/:eventId', 'not_found', 404);
@@ -271,7 +271,7 @@ export function createEventEndpoints(container: Container): Router {
             }
 
             metrics.recordHttpRequest('GET', '/events/:eventId', 200, Date.now() - startTime);
-            res.json({
+            return res.json({
                 success: true,
                 event
             });
@@ -280,7 +280,7 @@ export function createEventEndpoints(container: Container): Router {
             const err = error as Error;
             logger.error('Get event error', { error: err.message, eventId: req.params.eventId });
             metrics.recordHttpError('GET', '/events/:eventId', 'server_error', 500);
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: 'Internal server error',
                 code: 'INTERNAL_ERROR'
@@ -309,7 +309,7 @@ export function createEventEndpoints(container: Container): Router {
 
             const duration = Date.now() - startTime;
             metrics.recordHttpRequest('GET', '/events', 200, duration);
-            res.json({
+            return res.json({
                 success: true,
                 ...result
             });
@@ -318,7 +318,7 @@ export function createEventEndpoints(container: Container): Router {
             const err = error as Error;
             logger.error('Get events error', { error: err.message });
             metrics.recordHttpError('GET', '/events', 'server_error', 500);
-            res.status(500).json({
+            return res.status(500).json({
                 success: false,
                 error: 'Internal server error',
                 code: 'INTERNAL_ERROR'

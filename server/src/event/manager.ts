@@ -29,12 +29,12 @@ export interface IEventManager {
 }
 
 export interface EventFilters {
-    status?: string;
-    hostUserId?: string;
-    dateFrom?: Date;
-    dateTo?: Date;
-    limit?: number;
-    offset?: number;
+    status?: string | undefined;
+    hostUserId?: string | undefined;
+    dateFrom?: Date | undefined;
+    dateTo?: Date | undefined;
+    limit?: number | undefined;
+    offset?: number | undefined;
 }
 
 export class EventManager implements IEventManager {
