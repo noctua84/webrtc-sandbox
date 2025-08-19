@@ -8,7 +8,7 @@ import {PrismaClient} from "@prisma/client";
  */
 export const createPrismaClient = (config: any): PrismaClient => {
     return new PrismaClient({
-        log: config.isDevelopment ? ['query', 'info', 'warn', 'error'] : ['error'],
+        log: config.isDevelopment ? ['info', 'warn', 'error'] : ['error'],
         datasources: {
             db: {
                 url: config.db.url

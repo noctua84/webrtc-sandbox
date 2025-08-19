@@ -1,9 +1,9 @@
 import { Socket } from "socket.io";
 import { Container } from "../di";
-import { createHandler } from "../di";
 import { MediaStatusUpdate, ErrorResponse, RoomUpdateEvent } from "../types/webrtc.types";
 import { SocketConnectionContext } from "../types/socket.types";
 import {RoomParticipant} from "../types/room.types";
+import {createSocketHandler} from "../di/helpers";
 
 /**
  * Media Handler with DI Integration
@@ -15,7 +15,7 @@ import {RoomParticipant} from "../types/room.types";
 // UPDATE MEDIA STATUS HANDLER
 // ================================
 
-export const updateMediaStatusHandler = createHandler(
+export const updateMediaStatusHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io'] as const,
     (logger, metrics, roomManager, io) =>
         async (socket: Socket, data: MediaStatusUpdate, callback: (response: any) => void) => {

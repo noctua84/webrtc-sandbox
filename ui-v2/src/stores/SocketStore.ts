@@ -17,6 +17,10 @@ class SocketStore {
     connectionError: string | null = null;
     logs: LogEntry[] = [];
     maxLogs = 200;
+    retryAttempts = 0;
+    maxRetryAttempts = 5;
+    retryDelay = 1000;
+    retryTimeout: NodeJS.Timeout | null = null;
 
     constructor() {
         makeObservable(this, {
@@ -25,9 +29,11 @@ class SocketStore {
             isConnecting: observable,
             connectionError: observable,
             logs: observable,
+            retryAttempts: observable,
             connect: action,
             disconnect: action,
             clearLogs: action,
+            resetRetry: action,
             connectionStatus: computed
         });
     }
@@ -43,7 +49,7 @@ class SocketStore {
             this.connectionError = null;
         });
 
-        this.log('info', 'Connecting to server...', { serverUrl });
+        this.log('info', `Connecting to server (attempt ${this.retryAttempts + 1}/${this.maxRetryAttempts})...`, { serverUrl });
 
         try {
             this.socket = io(serverUrl, {
@@ -61,6 +67,7 @@ class SocketStore {
                     this.isConnecting = false;
                     this.connectionError = null;
                 });
+                this.resetRetry();
                 this.log('success', 'Connected to server', { socketId: this.socket?.id });
             });
 
@@ -70,6 +77,7 @@ class SocketStore {
                     this.connectionError = error.message;
                 });
                 this.log('error', 'Connection error', { error: error.message });
+                this.handleConnectionFailure();
             });
 
             this.socket.on('disconnect', (reason) => {
@@ -78,17 +86,23 @@ class SocketStore {
                     this.isConnecting = false;
                 });
                 this.log('warning', 'Disconnected from server', { reason });
+
+                // Auto-retry if disconnected unexpectedly
+                if (reason !== 'io client disconnect') {
+                    this.handleConnectionFailure();
+                }
             });
 
-            this.socket.on('reconnect', (attemptNumber: any) => {
+            this.socket.on('reconnect', (attemptNumber) => {
                 runInAction(() => {
                     this.isConnected = true;
                     this.connectionError = null;
                 });
+                this.resetRetry();
                 this.log('success', 'Reconnected to server', { attemptNumber });
             });
 
-            this.socket.on('reconnect_error', (error: { message: any; }) => {
+            this.socket.on('reconnect_error', (error) => {
                 this.log('error', 'Reconnection error', { error: error.message });
             });
 
@@ -100,7 +114,7 @@ class SocketStore {
             await new Promise<void>((resolve, reject) => {
                 const timeout = setTimeout(() => {
                     reject(new Error('Connection timeout'));
-                }, 10000);
+                }, 15000);
 
                 if (this.socket) {
                     this.socket.once('connect', () => {
@@ -121,11 +135,49 @@ class SocketStore {
                 this.connectionError = (error as Error).message;
             });
             this.log('error', 'Failed to connect', { error: (error as Error).message });
+            this.handleConnectionFailure();
             throw error;
         }
     }
 
+    private handleConnectionFailure(): void {
+        if (this.retryAttempts < this.maxRetryAttempts) {
+            runInAction(() => {
+                this.retryAttempts++;
+            });
+
+            const delay = this.retryDelay * Math.pow(2, this.retryAttempts - 1); // Exponential backoff
+            this.log('info', `Retrying connection in ${delay}ms...`, {
+                attempt: this.retryAttempts,
+                maxAttempts: this.maxRetryAttempts
+            });
+
+            this.retryTimeout = setTimeout(() => {
+                this.connect().catch((error) => {
+                    this.log('error', 'Retry connection failed', { error: error.message });
+                });
+            }, delay);
+        } else {
+            this.log('error', 'Max retry attempts reached. Connection failed permanently.');
+            runInAction(() => {
+                this.connectionError = 'Connection failed after maximum retry attempts';
+            });
+        }
+    }
+
+    resetRetry(): void {
+        runInAction(() => {
+            this.retryAttempts = 0;
+        });
+        if (this.retryTimeout) {
+            clearTimeout(this.retryTimeout);
+            this.retryTimeout = null;
+        }
+    }
+
     disconnect(): void {
+        this.resetRetry();
+
         if (this.socket) {
             this.log('info', 'Disconnecting from server...');
             this.socket.disconnect();

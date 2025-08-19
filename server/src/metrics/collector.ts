@@ -3,13 +3,9 @@ import {
     chatMessages,
     chatMessageSize,
     connectedParticipants,
-    databaseLatency,
-    databaseOperations,
     errorRate,
     iceCandidatesGenerated,
     iceConnectionStates,
-    mediaStreams,
-    mediaToggleEvents,
     memoryUsage,
     participantJoins,
     participantLeaves,
@@ -31,9 +27,62 @@ import {
     stateLatency,
     stateOperations, httpErrorRate
 } from "./metrics";
+import {register} from "prom-client";
+
+type ConnectionState = 'new' | 'checking' | 'connected' | 'completed' | 'failed' | 'disconnected' | 'closed';
 
 export class MetricsCollector {
     private startTime = Date.now();
+
+    constructor() {
+        // Register all metrics when the collector is instantiated
+        this.registerMetrics();
+
+        // Log registered metrics for debugging
+        register.getMetricsAsJSON().then(metrics => {
+            const names = metrics.map(m => m.name);
+            console.log('Registered metrics:', names);
+        })
+    }
+
+    private registerMetrics(): void {
+        // Register all metrics with Prometheus
+        const metrics = [
+            uptime,
+            memoryUsage,
+            totalParticipants,
+            connectedParticipants,
+            totalRooms,
+            activeRooms,
+            roomsCreated,
+            roomsDestroyed,
+            participantJoins,
+            participantLeaves,
+            participantSessionDuration,
+            peerConnectionAttempts,
+            peerConnectionDuration,
+            peerConnections,
+            iceConnectionStates,
+            iceCandidatesGenerated,
+            chatMessages,
+            chatMessageSize,
+            typingIndicators,
+            socketConnections,
+            socketEvents,
+            socketEventDuration,
+            socketReconnections,
+            stateOperations,
+            stateLatency,
+            errorRate,
+            requestProcessingTime,
+            httpErrorRate
+        ];
+
+        metrics.forEach(metric => {
+            register.registerMetric(metric as any);
+        })
+
+    }
 
     // Update system metrics
     updateSystemMetrics(): void {
@@ -83,33 +132,20 @@ export class MetricsCollector {
         }
     }
 
-    recordPeerConnectionStateChange(newState: 'new' | 'connecting' | 'connected' | 'disconnected' | 'failed'): void {
-        // For gauge metrics, we'd need to track current state counts
-        // This is a simplification - in practice you'd increment/decrement based on state transitions
-        peerConnections.labels(newState).inc();
+    updatePeerConnectionStates(stateCounts: Record<string, number>): void {
+        for (const [state, count] of Object.entries(stateCounts)) {
+            peerConnections.labels(state as any).set(count); // ✅ Absolute values
+        }
     }
 
-    recordIceConnectionStateChange(newState: 'new' | 'checking' | 'connected' | 'completed' | 'failed' | 'disconnected' | 'closed'): void {
-        iceConnectionStates.labels(newState).inc();
+    updateIceConnectionStates(stateCounts: Record<string, number>): void {
+        for (const [state, count] of Object.entries(stateCounts)) {
+            iceConnectionStates.labels(state as any).set(count);
+        }
     }
 
     recordIceCandidateGenerated(type: 'host' | 'srflx' | 'relay'): void {
         iceCandidatesGenerated.labels(type).inc();
-    }
-
-    recordMediaStreamChange(type: 'video' | 'audio' | 'screen', active: boolean): void {
-        // Update gauge - increment if active, decrement if inactive
-        if (active) {
-            mediaStreams.labels(type).inc();
-        } else {
-            mediaStreams.labels(type).dec();
-        }
-    }
-
-    recordMediaToggle(type: 'video' | 'audio' | 'screen', action: 'enable' | 'disable'): void {
-        mediaToggleEvents.labels(type, action).inc();
-        // Also update the active streams gauge
-        this.recordMediaStreamChange(type, action === 'enable');
     }
 
     // Record chat metrics
@@ -147,14 +183,6 @@ export class MetricsCollector {
         stateOperations.labels(operation, type).inc();
         if (latency !== undefined) {
             stateLatency.labels(operation).observe(latency / 1000);
-        }
-    }
-
-    // Record database operations
-    recordDatabaseOperation(operation: 'create' | 'read' | 'update' | 'delete', table: string, latency?: number): void {
-        databaseOperations.labels(operation, table).inc();
-        if (latency !== undefined) {
-            databaseLatency.labels(operation).observe(latency / 1000);
         }
     }
 

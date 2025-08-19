@@ -15,11 +15,12 @@ import {RoomManager} from "../room/manager";
 import {ChatManager} from "../chat/manager";
 import {RoomRepository} from "../db/repository/room.repository";
 import {
+    accessControlSchema,
     analyticsRangeSchema,
     bookParticipantSchema,
     cancelBookingSchema, closeEventSchema,
     createEventSchema, eventFiltersSchema,
-    joinEventSchema, updateEventSchema
+    joinEventSchema, startEventSchema, updateEventSchema
 } from "../validation/event.shema";
 import {EventManager} from "../event/manager";
 import {EventRepository} from "../db/repository/event.repository";
@@ -62,6 +63,8 @@ export const createAppContainer = () => {
             updateEvent: updateEventSchema,
             eventFilters: eventFiltersSchema,
             analyticsRange: analyticsRangeSchema,
+            startEvent: startEventSchema,
+            accessEvent: accessControlSchema
         }
     })
 

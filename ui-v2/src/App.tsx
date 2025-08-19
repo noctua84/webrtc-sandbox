@@ -2,26 +2,26 @@
 import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
 import { observer } from 'mobx-react-lite';
-import { Calendar, Monitor, Activity, Github } from 'lucide-react';
+import { Calendar, Monitor, Activity, Github, Plus } from 'lucide-react';
 import { socketStore } from './stores/SocketStore';
 import { eventStore } from './stores/EventStore';
 import { roomStore } from './stores/RoomStore';
 import { ConnectionStatus } from './components/ConnectionStatus';
+import { EventList } from './components/EventList';
 import { EventCreator } from './components/EventCreator';
-import { EventBooking } from './components/EventBooking';
+import { EventOverview } from './components/EventOverview';
 import { VideoRoom } from './components/VideoRoom';
 import { LogViewer } from './components/LogViewer';
 import { Button } from './components/ui/Button';
-import { Card } from './components/ui/Card';
 
 // Layout wrapper component
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     const location = useLocation();
 
     return (
-        <div className="min-h-screen bg-gray-50">
+        <div className="min-h-screen bg-gray-50 flex flex-col">
             {/* Header */}
-            <header className="bg-white shadow-sm border-b">
+            <header className="bg-white shadow-sm border-b flex-shrink-0">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
                     <div className="flex items-center justify-between h-16">
                         <div className="flex items-center space-x-4">
@@ -40,7 +40,19 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
                                     }`}
                                 >
                                     <Calendar className="w-4 h-4" />
-                                    <span>Create Event</span>
+                                    <span>Events</span>
+                                </Link>
+
+                                <Link
+                                    to="/create"
+                                    className={`flex items-center space-x-1 px-3 py-2 rounded-md text-sm font-medium transition-colors ${
+                                        location.pathname === '/create'
+                                            ? 'bg-primary-100 text-primary-700'
+                                            : 'text-gray-700 hover:text-primary-600'
+                                    }`}
+                                >
+                                    <Plus className="w-4 h-4" />
+                                    <span>Create</span>
                                 </Link>
 
                                 <Link
@@ -73,12 +85,12 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             </header>
 
             {/* Main Content */}
-            <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
                 {children}
             </main>
 
             {/* Footer */}
-            <footer className="bg-white border-t mt-12">
+            <footer className="bg-white border-t flex-shrink-0">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
                     <div className="text-center text-sm text-gray-500">
                         Event Lifecycle Demo - React + TypeScript + MobX + Socket.IO
@@ -89,77 +101,14 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
     );
 };
 
-// Home page component
-const HomePage: React.FC = observer(() => {
-    const { currentEvent, userRole } = eventStore;
-    const { isInRoom } = roomStore;
-
-    // Show video room if user is in room
-    if (isInRoom) {
-        return <VideoRoom />;
-    }
-
-    // Show event management for hosts with created events
-    if (currentEvent && userRole === 'host') {
-        return (
-            <div className="space-y-8">
-                <EventCreator />
-                {eventStore.canJoinEvent && (
-                    <div className="max-w-2xl mx-auto">
-                        <Card title="Ready to Start">
-                            <div className="space-y-4">
-                                <p className="text-gray-600">
-                                    Your event is ready! You can now join the video room to start the session.
-                                </p>
-                                <VideoRoom />
-                            </div>
-                        </Card>
-                    </div>
-                )}
-            </div>
-        );
-    }
-
-    // Default: show event creator
-    return (
-        <div className="space-y-8">
-            <div className="text-center mb-8">
-                <h1 className="text-3xl font-bold text-gray-900 mb-4">
-                    Event Lifecycle Demo
-                </h1>
-                <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-                    Complete event management system showcasing the full lifecycle:
-                    create events, manage bookings, and host video conferences.
-                </p>
-            </div>
-
-            <EventCreator />
-        </div>
-    );
-});
-
-// Event page component for participants
-const EventPage: React.FC = observer(() => {
-    const { isInRoom } = roomStore;
-    const { currentEvent, userRole } = eventStore;
-
-    // Show video room if user is in room
-    if (isInRoom) {
-        return <VideoRoom />;
-    }
-
-    // Show video room interface if user can join (booked or host)
-    if (eventStore.canJoinEvent) {
-        return <VideoRoom />;
-    }
-
-    // Show booking interface
-    return <EventBooking />;
+// Video Room Page (only connects socket when accessed)
+const VideoRoomPage: React.FC = observer(() => {
+    return <VideoRoom />;
 });
 
 // Logs page component
 const LogsPage: React.FC = () => (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-12">
         <div className="text-center">
             <h1 className="text-2xl font-bold text-gray-900 mb-2">Application Logs</h1>
             <p className="text-gray-600">
@@ -173,7 +122,7 @@ const LogsPage: React.FC = () => (
 // Main App component
 const App: React.FC = observer(() => {
     useEffect(() => {
-        // Initialize socket store logging
+        // Only initialize logging, no socket connection
         socketStore.log('info', 'Event Lifecycle application started');
 
         // Cleanup on unmount
@@ -188,8 +137,10 @@ const App: React.FC = observer(() => {
         <Router>
             <Layout>
                 <Routes>
-                    <Route path="/" element={<HomePage />} />
-                    <Route path="/event/:eventId" element={<EventPage />} />
+                    <Route path="/" element={<EventList />} />
+                    <Route path="/create" element={<EventCreator />} />
+                    <Route path="/event/:eventId" element={<EventOverview />} />
+                    <Route path="/event/:eventId/room" element={<VideoRoomPage />} />
                     <Route path="/logs" element={<LogsPage />} />
 
                     {/* Catch-all route */}

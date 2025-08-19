@@ -228,6 +228,32 @@ export const closeEventSchema = Joi.object({
 });
 
 /**
+ * Schema for starting events
+ */
+export const startEventSchema = Joi.object({
+    eventId: Joi.string()
+        .required()
+        .pattern(/^[a-zA-Z0-9\-_]+$/)
+        .min(3)
+        .max(100)
+        .messages({
+            'string.empty': 'Event ID is required',
+            'string.pattern.base': 'Event ID must contain only alphanumeric characters, hyphens, and underscores'
+        }),
+
+    userId: Joi.string()
+        .required()
+        .trim()
+        .min(1)
+        .max(100)
+        .messages({
+            'string.empty': 'User ID is required',
+            'string.min': 'User ID must be at least 1 character long',
+            'string.max': 'User ID must not exceed 100 characters'
+        }),
+});
+
+/**
  * Schema for updating events
  */
 export const updateEventSchema = Joi.object({
@@ -390,3 +416,27 @@ export const analyticsRangeSchema = Joi.object({
             'any.only': 'Granularity must be one of: hour, day, week, month'
         })
 });
+
+export const accessControlSchema = Joi.object({
+    userId: Joi.string()
+        .required()
+        .trim()
+        .min(1)
+        .max(100)
+        .messages({
+            'string.empty': 'User ID is required',
+            'string.min': 'User ID must be at least 1 character long',
+            'string.max': 'User ID must not exceed 100 characters'
+        }),
+    eventId: Joi.string()
+        .required()
+        .pattern(/^[a-zA-Z0-9\-_]+$/)
+        .min(3)
+        .max(100)
+        .messages({
+            'string.empty': 'Event ID is required',
+            'string.pattern.base': 'Event ID must contain only alphanumeric characters, hyphens, and underscores',
+            'string.min': 'Event ID must be at least 3 characters long',
+            'string.max': 'Event ID must not exceed 100 characters'
+        })
+})

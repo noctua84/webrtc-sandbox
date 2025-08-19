@@ -157,6 +157,31 @@ export interface EventStatistics {
     activeParticipants: number;
 }
 
+export interface EventAccessResult {
+    success: boolean;
+    access?: {
+        canView: boolean;         // Can view event details
+        canJoin: boolean;         // Can join video room
+        canStart: boolean;        // Can start event (host only)
+        canBook: boolean;         // Can book if not full/already booked
+        userRole: 'host' | 'participant' | 'guest';
+        isBooked: boolean;        // Has active booking
+        booking?: {               // Booking details if exists
+            id: string;
+            userName: string;
+            userEmail: string;
+            bookedAt: string;
+        };
+        event: {                  // Current event status
+            eventId: string;
+            status: 'SCHEDULED' | 'ACTIVE' | 'CLOSED' | 'CANCELLED';
+            currentBookings: number;
+            maxParticipants: number;
+        };
+    };
+    error?: string;
+}
+
 // Database entity types (for repository layer)
 export interface EventEntity {
     id: string;

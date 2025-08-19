@@ -1,7 +1,6 @@
 import { Room as PrismaRoom, Participant as PrismaParticipant } from "@prisma/client";
 import type { Logger } from "../types/log.types";
 import {
-    RoomRepository,
     CreateRoomContext,
     AddParticipantContext,
     IRoomRepository

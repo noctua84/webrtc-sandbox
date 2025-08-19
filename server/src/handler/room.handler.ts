@@ -14,18 +14,20 @@ import {
     ErrorResponse,
     RoomUpdateEvent
 } from "../types/webrtc.types";
-import { createHandler } from "../di";
 import {Room} from "@prisma/client";
+import {createSocketHandler} from "../di/helpers";
 
 // ================================
 // JOIN ROOM HANDLER
 // ================================
 
-export const joinRoomHandler = createHandler(
+export const joinRoomHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io', 'eventManager'] as const,
     (logger, metrics, roomManager, io, eventManager) =>
         async (socket: Socket, data: JoinRoomRequest, callback: (response: JoinRoomResponse | ErrorResponse) => void) => {
             const startTime = Date.now();
+
+            console.log(`Join room handler called for socket ${socket.id} with data:`, data);
 
             try {
                 logger.info('Received join-room request', {
@@ -35,11 +37,20 @@ export const joinRoomHandler = createHandler(
 
                 // Validate required fields
                 if (!data.eventId || !data.extUserId || !data.userName || !data.userEmail) {
+                   logger.error('Missing required fields for join-room', {
+                        socketId: socket.id,
+                        eventId: data.eventId,
+                        extUserId: data.extUserId,
+                        userName: data.userName,
+                        userEmail: data.userEmail
+                    })
                     const response: ErrorResponse = {
                         success: false,
                         error: 'Event ID, external user ID, username, and email are required'
                     };
-                    return callback(response);
+                    if (callback && typeof callback === 'function') {
+                        callback(response);
+                    }
                 }
 
                 const isAuthorized = await eventManager.isUserAuthorizedForEvent(
@@ -58,38 +69,42 @@ export const joinRoomHandler = createHandler(
                         success: false,
                         error: 'You are not authorized to join this room'
                     };
-                    return callback(response);
+                    if (callback && typeof callback === 'function') {
+                       callback(response);
+                    }
                 }
 
-                const { roomId, userName, userEmail, extUserId, reconnectionToken } = data;
-
                 // Validate input
-                if (!roomId) {
+                if (!data.roomId) {
                     metrics.recordError('room', 'error', 'Room ID is required for joining');
-                    logger.error('Room ID is required for joining', { socketId: socket.id, roomId });
+                    logger.error('Room ID is required for joining', { socketId: socket.id, roomId: data.roomId });
                     const response: ErrorResponse = {
                         success: false,
                         error: 'Room ID is required'
                     };
-                    return callback(response);
+                    if (callback && typeof callback === 'function') {
+                        callback(response);
+                    }
                 }
 
                 // Add participant to room
                 const result = await roomManager.addParticipantToRoom(
-                    roomId,
+                    data.roomId,
                     socket.id,
                     {
-                        extUserId,
-                        userName: userName.trim(),
-                        userEmail: userEmail.trim()
+                        extUserId: data.extUserId.trim(),
+                        userName: data.userName.trim(),
+                        userEmail: data.userEmail.trim()
                     },
-                    reconnectionToken
+                    data.reconnectionToken
                 );
+
+                console.log(result)
 
                 if (!result.success) {
                     metrics.recordError('room', 'error', result.error || 'Failed to join room');
                     logger.error('Failed to join room', {
-                        roomId,
+                        roomId: data.roomId,
                         socketId: socket.id,
                         error: result.error
                     });
@@ -97,20 +112,23 @@ export const joinRoomHandler = createHandler(
                         success: false,
                         error: result.error || 'Failed to join room'
                     };
-                    return callback(response);
+
+                    if (callback && typeof callback === 'function') {
+                        callback(response);
+                    }
                 }
 
                 // Join socket to room channel
-                socket.join(roomId);
-                logger.info('Socket joined room channel', { socketId: socket.id, roomId });
+                socket.join(data.roomId);
+                logger.info('Socket joined room channel', { socketId: socket.id, roomId: data.roomId });
 
                 // Store socket data
                 socket.data = {
                     ...socket.data,
-                    roomId,
-                    userName: userName.trim(),
-                    userEmail: userEmail.trim(),
-                    extUserId,
+                    roomId: data.roomId,
+                    userName: data.userName.trim(),
+                    userEmail: data.userEmail.trim(),
+                    extUserId: data.extUserId,
                     eventId: data.eventId
                 };
 
@@ -131,7 +149,7 @@ export const joinRoomHandler = createHandler(
                     },
                     participant: {
                         id: result.participant!.id,
-                        roomId: roomId,
+                        roomId: data.roomId,
                         socketId: result.participant!.socketId!,
                         userName: result.participant!.userName,
                         userEmail: result.participant!.userEmail,
@@ -156,12 +174,12 @@ export const joinRoomHandler = createHandler(
                 // Broadcast to other participants
                 const eventType = result.isReconnection ? 'participant-reconnected' : 'participant-joined';
                 const updateEvent: RoomUpdateEvent = {
-                    roomId,
+                    roomId: data.roomId,
                     participants: roomManager.participantsToArray(result.room!.participants),
                     event: eventType,
                     participant: response.participant
                 };
-                socket.to(roomId).emit('room-updated', updateEvent);
+                socket.to(data.roomId).emit('room-updated', updateEvent);
 
             } catch (error: any) {
                 const err = error as Error;
@@ -180,6 +198,8 @@ export const joinRoomHandler = createHandler(
                 if (callback && typeof callback === 'function') {
                     callback(response);
                 }
+
+                return;
             }
         }
 );
@@ -188,7 +208,7 @@ export const joinRoomHandler = createHandler(
 // LEAVE ROOM HANDLER
 // ================================
 
-export const leaveRoomHandler = createHandler(
+export const leaveRoomHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io'] as const,
     (logger, metrics, roomManager, io) =>
         async (socket: Socket, data: LeaveRoomRequest, callback: (response: LeaveRoomResponse | ErrorResponse) => void) => {
@@ -311,7 +331,7 @@ export const leaveRoomHandler = createHandler(
 // GET ROOM INFO HANDLER
 // ================================
 
-export const getRoomInfoHandler = createHandler(
+export const getRoomInfoHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager'] as const,
     (logger, metrics, roomManager) =>
         async (socket: Socket, data: GetRoomInfoRequest, callback: (response: GetRoomInfoResponse | ErrorResponse) => void) => {
@@ -389,7 +409,7 @@ export const getRoomInfoHandler = createHandler(
 // RECONNECT ROOM HANDLER
 // ================================
 
-export const reconnectRoomHandler = createHandler(
+export const reconnectRoomHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io'] as const,
     (logger, metrics, roomManager, io) =>
         async (socket: Socket, data: ReconnectRoomRequest, callback: (response: ReconnectRoomResponse | ErrorResponse) => void) => {

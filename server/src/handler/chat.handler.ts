@@ -12,11 +12,12 @@ import type {
     TypingIndicatorResponse, EditMessageContext, DeleteMessageContext,
 } from '../types/chat.types';
 import {ErrorResponse} from "../types/webrtc.types";
-import {Container, createHandler} from "../di";
+import {Container} from "../di";
 import {SocketConnectionContext} from "../types/socket.types";
+import {createSocketHandler} from "../di/helpers";
 
 
-export const sendMessageHandler = createHandler(
+export const sendMessageHandler = createSocketHandler(
     ['roomManager', 'logger', 'chatManager', 'metrics', 'io'],
     (roomManager, logger, chatManager, metrics, io) => async (
         socket: Socket,
@@ -145,7 +146,7 @@ export const sendMessageHandler = createHandler(
 // EDIT MESSAGE HANDLER
 // ================================
 
-export const editMessageHandler = createHandler(
+export const editMessageHandler = createSocketHandler(
     ['logger', 'schemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
     (logger, schemas, metrics, roomManager, io, chatManager) =>
         async (socket: Socket, data: EditMessageRequest, callback: (response: any) => void) => {
@@ -314,7 +315,7 @@ export const editMessageHandler = createHandler(
 // DELETE MESSAGE HANDLER
 // ================================
 
-export const deleteMessageHandler = createHandler(
+export const deleteMessageHandler = createSocketHandler(
     ['logger', 'schemas', 'metrics', 'roomManager', 'io', 'chatManager'] as const,
     (logger, schemas, metrics, roomManager, io, chatManager) =>
         async (socket: Socket, data: DeleteMessageRequest, callback: (response: any) => void) => {
@@ -419,7 +420,7 @@ export const deleteMessageHandler = createHandler(
 // TYPING INDICATOR HANDLER
 // ================================
 
-export const typingIndicatorHandler = createHandler(
+export const typingIndicatorHandler = createSocketHandler(
     ['logger', 'schemas', 'metrics', 'roomManager', 'io'] as const,
     (logger, schemas, metrics, roomManager, io) =>
         async (socket: Socket, data: TypingIndicatorRequest, callback: (response: any) => void) => {
@@ -513,7 +514,7 @@ export const typingIndicatorHandler = createHandler(
 // GET CHAT HISTORY HANDLER
 // ================================
 
-export const getChatHistoryHandler = createHandler(
+export const getChatHistoryHandler = createSocketHandler(
     ['logger', 'chatManager', 'metrics', 'roomManager'] as const,
     (logger, chatManager, metrics, roomManager) =>
         async (socket: Socket, data: { roomId: string }, callback: (response: any) => void) => {

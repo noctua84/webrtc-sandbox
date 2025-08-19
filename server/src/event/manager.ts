@@ -8,7 +8,7 @@ import {
     CancelBookingRequest,
     CloseEventRequest,
     CloseResult,
-    CreateEventRequest,
+    CreateEventRequest, EventAccessResult,
     EventDetails,
     EventResult,
     EventsResult, EventSummary,
@@ -26,15 +26,17 @@ export interface IEventManager {
     getEventDetails(eventId: string): Promise<EventDetails | null>;
     getEvents(filters: EventFilters): Promise<EventsResult>;
     isUserAuthorizedForEvent(eventId: string, userId: string): Promise<boolean>;
+    startEvent(eventId: string, userId: string): Promise<EventResult>;
+    checkAuthorizationForEvent(eventId: string, userId: string): Promise<EventAccessResult>;
 }
 
 export interface EventFilters {
-    status?: string | undefined;
-    hostUserId?: string | undefined;
-    dateFrom?: Date | undefined;
-    dateTo?: Date | undefined;
-    limit?: number | undefined;
-    offset?: number | undefined;
+    status?: string;
+    hostUserId?: string;
+    dateFrom?: Date;
+    dateTo?: Date;
+    limit?: number;
+    offset?: number;
 }
 
 export class EventManager implements IEventManager {
@@ -534,6 +536,166 @@ export class EventManager implements IEventManager {
                 error: err.message
             });
             return false;
+        }
+    }
+
+    async startEvent(eventId: string, userId: string): Promise<EventResult> {
+        try {
+            this.logger.info('Starting event', { eventId });
+
+            // Get event details
+            const event = await this.repository.getEventById(eventId);
+            if (!event) {
+                return {
+                    success: false,
+                    error: 'Event not found'
+                };
+            }
+
+            // Check if user is the host
+            if (event.hostUserId !== userId) {
+                return {
+                    success: false,
+                    error: 'Only the host can start the event'
+                };
+            }
+
+            // Check if event is closed
+            /**
+            if (event.status === 'CLOSED') {
+                return {
+                    success: false,
+                    error: 'Event is closed and cannot be started'
+                };
+            }
+            */
+
+            // Check if event is already active
+            if (event.status === 'ACTIVE') {
+                return {
+                    success: false,
+                    error: 'Event is already active'
+                };
+            }
+
+
+
+            // Update event status to ACTIVE
+            const updatedEvent = await this.repository.updateEventStatus(eventId, 'ACTIVE');
+            if (!updatedEvent) {
+                return {
+                    success: false,
+                    error: 'Failed to start event'
+                };
+            }
+
+            this.logger.info('Event started successfully', { eventId });
+
+            return {
+                success: true,
+            };
+        } catch (error) {
+            const err = error as Error;
+            this.logger.error('Failed to start event', { eventId, error: err.message });
+            return {
+                success: false,
+                error: 'Internal error starting event'
+            };
+        }
+    }
+
+    async checkAuthorizationForEvent(eventId: string, userId: string): Promise<EventAccessResult> {
+        try {
+            this.logger.info('Checking authorization for event', { eventId, userId });
+
+            // Get event details
+            const event = await this.repository.getEventById(eventId);
+            if (!event) {
+                return {
+                    success: false,
+                    error: 'Event not found'
+                };
+            }
+
+            // Check if user is the host
+            if (event.hostUserId === userId) {
+                return {
+                    success: true,
+                    access: {
+                        canView: true,
+                        canJoin: true,
+                        canStart: true,
+                        canBook: false, // Hosts cannot book themselves
+                        userRole: 'host',
+                        isBooked: false,
+                        event: {
+                            eventId: event.eventId,
+                            status: event.status,
+                            currentBookings: event.bookings?.length || 0,
+                            maxParticipants: event.maxParticipants
+                        }
+                    }
+                };
+            }
+
+            // Check if user has a booking
+            const booking = await this.repository.getBooking(eventId, userId);
+            if (booking) {
+                return {
+                    success: true,
+                    access: {
+                        canView: true,
+                        canJoin: true,
+                        canStart: false, // Only hosts can start
+                        canBook: false, // Already booked
+                        userRole: 'participant',
+                        isBooked: true,
+                        booking: {
+                            id: booking.id,
+                            userName: booking.userName,
+                            userEmail: booking.userEmail,
+                            bookedAt: booking.bookedAt.toISOString()
+                        },
+                        event: {
+                            eventId: event.eventId,
+                            status: event.status,
+                            currentBookings: event.bookings?.length || 0,
+                            maxParticipants: event.maxParticipants
+                        }
+                    }
+                };
+            }
+
+            // User is a guest
+            return {
+                success: true,
+                access: {
+                    canView: true,
+                    canJoin: false, // Guests cannot join without booking
+                    canStart: false, // Only hosts can start
+                    canBook: true, // Guests can book if not full/already booked
+                    userRole: 'guest',
+                    isBooked: false,
+                    event: {
+                        eventId: event.eventId,
+                        status: event.status,
+                        currentBookings: event.bookings?.length || 0,
+                        maxParticipants: event.maxParticipants
+                    }
+                }
+            };
+        } catch (error) {
+            const err = error as Error;
+            this.logger.error('Failed to check authorization for event', {
+                eventId,
+                userId,
+                error: err.message
+            });
+
+            return {
+                success: false,
+                error: 'Internal error checking authorization'
+            };
         }
     }
 }

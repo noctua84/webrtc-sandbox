@@ -96,11 +96,11 @@ export const EventCreator: React.FC = observer(() => {
 
         if (success) {
             // Set user info for the host
-            eventStore.setUserInfo(
-                formData.hostUserId.trim(),
-                formData.hostUserName.trim(),
-                formData.hostEmail.trim()
-            );
+            //eventStore.setUserInfo(
+            //    formData.hostUserId.trim(),
+            //    formData.hostUserName.trim(),
+            //    formData.hostEmail.trim()
+            //);
 
             // Connect to socket for room functionality
             if (!socketStore.isConnected) {
@@ -320,11 +320,10 @@ export const EventCreator: React.FC = observer(() => {
                     />
                 </div>
 
-                <div className="pt-6 border-t">
+                <div className="pt-6 border-t" style={{ position: 'relative', zIndex: 10 }}>
                     <Button
                         onClick={handleSubmit}
                         loading={isCreatingEvent}
-                        disabled={isCreatingEvent}
                         className="w-full md:w-auto"
                     >
                         Create Event

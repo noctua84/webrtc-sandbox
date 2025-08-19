@@ -1,4 +1,5 @@
 import {Container, ServiceDefinition} from './container'
+import {Socket} from "socket.io";
 
 /**
  * Creates a handler function with dependency injection.
@@ -15,6 +16,30 @@ export function createHandler<T extends any[], R>(dependencies: string[], handle
 
         // Call the handler with resolved dependencies and original arguments
         return handler(...resolvedDependencies);
+    };
+}
+
+/**
+ * Creates a Socket.IO event handler with dependency injection.
+ * This function takes an array of dependency names and a handler function.
+ * The handler function will be called with the resolved dependencies and the socket instance.
+ *
+ * @param dependencies
+ * @param handler
+ */
+export function createSocketHandler<TDeps extends readonly string[]>(
+    dependencies: TDeps,
+    handler: (...deps: any[]) => (socket: Socket, ...args: any[]) => any
+) {
+    return function (container: Container) {
+        const resolvedDependencies = dependencies.map(dep => container.get(dep));
+        const handlerWithDeps = handler(...resolvedDependencies);
+
+        // ✅ Return a function that Socket.IO can call directly
+        return function (this: Socket, ...eventArgs: any[]) {
+            // 'this' is the socket instance in Socket.IO event handlers
+            return handlerWithDeps(this, ...eventArgs);
+        };
     };
 }
 

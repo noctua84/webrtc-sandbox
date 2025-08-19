@@ -77,29 +77,4 @@ export class Container {
             throw new Error(`Error creating service ${name}: ${error.message}`);
         }
     }
-
-    /**
-     * Creates a new scope/container that inherits services from the parent container.
-     */
-    createScope(): Container {
-        const scope = new Container()
-
-        for (const [name, service] of this.services) {
-            scope.services.set(name, service);
-        }
-
-        return scope;
-    }
-
-    /**
-     * Creates a factory function that resolves dependencies from the container.
-     * @param fn
-     * @param dependencies
-     */
-    factory<T extends (...args: any[]) => any>(fn: T, dependencies: string[]): () => ReturnType<T> {
-        return () => {
-            const resolvedDependencies = dependencies.map(dep => this.get(dep));
-            return fn(...resolvedDependencies);
-        }
-    }
 }

@@ -1,6 +1,5 @@
 import { Socket } from "socket.io";
 import { Container } from "../di";
-import { createHandler } from "../di";
 import {
     WebRTCOffer,
     WebRTCAnswer,
@@ -9,6 +8,7 @@ import {
     RTCSessionDescriptionInit
 } from "../types/webrtc.types";
 import { SocketConnectionContext } from "../types/socket.types";
+import {createSocketHandler} from "../di/helpers";
 
 /**
  * WebRTC Handler with DI Integration
@@ -110,7 +110,7 @@ const extractStunServersFromSdp = (sdp: string): string[] => {
 // WEBRTC OFFER HANDLER
 // ================================
 
-export const webrtcOfferHandler = createHandler(
+export const webrtcOfferHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io'] as const,
     (logger, metrics, roomManager, io) =>
         async (socket: Socket, data: WebRTCOffer, callback: (response: any) => void) => {
@@ -269,7 +269,7 @@ export const webrtcOfferHandler = createHandler(
 // WEBRTC ANSWER HANDLER
 // ================================
 
-export const webrtcAnswerHandler = createHandler(
+export const webrtcAnswerHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io'] as const,
     (logger, metrics, roomManager, io) =>
         async (socket: Socket, data: WebRTCAnswer, callback: (response: any) => void) => {
@@ -399,7 +399,7 @@ export const webrtcAnswerHandler = createHandler(
 // WEBRTC ICE CANDIDATE HANDLER
 // ================================
 
-export const webrtcIceCandidateHandler = createHandler(
+export const webrtcIceCandidateHandler = createSocketHandler(
     ['logger', 'metrics', 'roomManager', 'io'] as const,
     (logger, metrics, roomManager, io) =>
         async (socket: Socket, data: WebRTCIceCandidate, callback?: (response: any) => void) => {

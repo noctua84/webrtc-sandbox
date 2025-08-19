@@ -45,6 +45,8 @@ export interface ServiceRegistry {
         updateEvent: joi.Schema,
         eventFilters: joi.Schema,
         analyticsRange: joi.Schema,
+        startEvent: joi.Schema,
+        accessEvent: joi.Schema
     }
 
     // database:
