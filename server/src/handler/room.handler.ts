@@ -136,6 +136,9 @@ export const joinRoomHandler = createSocketHandler(
                 const processingTime = Date.now() - startTime;
                 metrics.recordSocketEvent('join-room', 'outbound', processingTime);
 
+                console.log(result)
+                console.log(result.participant)
+
                 const response: JoinRoomResponse = {
                     success: true,
                     room: {
@@ -154,7 +157,7 @@ export const joinRoomHandler = createSocketHandler(
                         userName: result.participant!.userName,
                         userEmail: result.participant!.userEmail,
                         extUserId: result.participant!.extUserId,
-                        isCreator: result.participant!.creatorOf.length > 0,
+                        isCreator: result.participant.id === result.room!.creatorId,
                         joinedAt: result.participant!.joinedAt?.toISOString() || new Date().toISOString(),
                         lastSeen: result.participant!.lastSeen?.toISOString() || new Date().toISOString(),
                         reconnectionToken: result.participant!.reconnectionToken!,

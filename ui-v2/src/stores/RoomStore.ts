@@ -1,4 +1,4 @@
-// stores/RoomStore.ts
+// ui-v2/src/stores/RoomStore.ts
 import { makeObservable, observable, action, computed, runInAction } from 'mobx';
 import type {
     Participant,
@@ -21,6 +21,11 @@ class RoomStore {
     reconnectionToken: string | null = null;
     error: string | null = null;
 
+    // Add state management for listeners and join attempts
+    private listenersSetup = false;
+    private joinAttemptInProgress = false;
+    private lastJoinRequest: JoinRoomRequest | null = null;
+
     constructor() {
         makeObservable(this, {
             currentRoom: observable,
@@ -39,23 +44,71 @@ class RoomStore {
             isHost: computed
         });
 
-        // Don't setup socket listeners in constructor - wait for socket connection
+        // Setup cleanup on socket disconnection
+        this.setupSocketDisconnectionHandler();
     }
 
-    // Setup socket listeners when needed (after connection)
+    private setupSocketDisconnectionHandler(): void {
+        // Watch for socket disconnections to clean up listeners
+        if (socketStore.socket) {
+            socketStore.socket.on('disconnect', () => {
+                this.removeSocketListeners();
+            });
+        }
+    }
+
+    // Setup socket listeners only once with proper cleanup
     setupSocketListeners(): void {
+        if (this.listenersSetup) {
+            socketStore.log('info', 'Room listeners already setup, skipping');
+            return;
+        }
+
         if (!socketStore.socket || !socketStore.isConnected) {
             socketStore.log('warning', 'Cannot setup room listeners: socket not connected');
             return;
         }
 
         socketStore.log('info', 'Setting up room socket listeners');
+
+        // Remove any existing listeners first to prevent duplicates
+        this.removeSocketListeners();
+
+        // Setup new listeners
         socketStore.on('room-updated', this.handleRoomUpdate.bind(this));
         socketStore.on('participant-joined', this.handleParticipantJoined.bind(this));
         socketStore.on('participant-left', this.handleParticipantLeft.bind(this));
+
+        this.listenersSetup = true;
+        socketStore.log('success', 'Room socket listeners setup complete');
+    }
+
+    removeSocketListeners(): void {
+        if (!this.listenersSetup) {
+            return;
+        }
+
+        socketStore.log('info', 'Removing room socket listeners');
+
+        try {
+            socketStore.off('room-updated');
+            socketStore.off('participant-joined');
+            socketStore.off('participant-left');
+        } catch (error) {
+            socketStore.log('warning', 'Error removing socket listeners', { error: (error as Error).message });
+        }
+
+        this.listenersSetup = false;
+        socketStore.log('info', 'Room socket listeners removed');
     }
 
     async joinRoom(): Promise<boolean> {
+        // Prevent multiple simultaneous join attempts
+        if (this.joinAttemptInProgress) {
+            socketStore.log('warning', 'Join room already in progress, skipping duplicate request');
+            return false;
+        }
+
         if (!eventStore.currentEvent) {
             runInAction(() => {
                 this.error = 'No event loaded - cannot join room';
@@ -63,66 +116,93 @@ class RoomStore {
             return false;
         }
 
-        // Verify authorization before attempting to join
-        const access = await authStore.checkEventAccess(eventStore.currentEvent.eventId);
-        if (!access?.canJoin) {
-            runInAction(() => {
-                this.error = 'Not authorized to join this room';
+        // Check if we're already in this room
+        if (this.isInRoom &&
+            this.currentRoom?.id === eventStore.currentEvent.roomId &&
+            this.currentParticipant) {
+            socketStore.log('info', 'Already in room, skipping join attempt', {
+                roomId: this.currentRoom.id,
+                participantId: this.currentParticipant.id
             });
-            socketStore.log('error', 'Join room blocked: insufficient permissions', {
-                eventId: eventStore.currentEvent?.eventId,
-                access
-            });
-            return false;
+            return true;
         }
 
-        // Ensure we have user info for the join request
-        if (!sessionStore.userInfo.userId || !sessionStore.userInfo.userName || !sessionStore.userInfo.userEmail) {
-            runInAction(() => {
-                this.error = 'User information required to join room';
-            });
-            return false;
-        }
+        this.joinAttemptInProgress = true;
 
-        // Ensure socket is connected and listeners are setup
-        if (!socketStore.isConnected) {
-            socketStore.log('warning', 'Socket not connected, attempting to connect...');
-            try {
-                await socketStore.connect();
-            } catch (error) {
+        try {
+            // Verify authorization before attempting to join
+            const access = await authStore.checkEventAccess(eventStore.currentEvent.eventId);
+            if (!access?.canJoin) {
                 runInAction(() => {
-                    this.error = 'Failed to connect to server';
+                    this.error = 'Not authorized to join this room';
+                });
+                socketStore.log('error', 'Join room blocked: insufficient permissions', {
+                    eventId: eventStore.currentEvent?.eventId,
+                    access
                 });
                 return false;
             }
-        }
 
-        // Setup socket listeners now that we're connected
-        this.setupSocketListeners();
+            // Ensure we have user info for the join request
+            if (!sessionStore.userInfo.userId || !sessionStore.userInfo.userName || !sessionStore.userInfo.userEmail) {
+                runInAction(() => {
+                    this.error = 'User information required to join room';
+                });
+                return false;
+            }
 
-        runInAction(() => {
-            this.isJoiningRoom = true;
-            this.error = null;
-        });
+            // Ensure socket is connected
+            if (!socketStore.isConnected) {
+                socketStore.log('warning', 'Socket not connected, attempting to connect...');
+                try {
+                    await socketStore.connect();
+                } catch (error) {
+                    runInAction(() => {
+                        this.error = 'Failed to connect to server';
+                    });
+                    return false;
+                }
+            }
 
-        const joinRequest: JoinRoomRequest = {
-            eventId: eventStore.currentEvent.eventId,
-            roomId: eventStore.currentEvent.roomId,
-            extUserId: sessionStore.userInfo.userId,
-            userName: sessionStore.userInfo.userName,
-            userEmail: sessionStore.userInfo.userEmail,
-            reconnectionToken: this.reconnectionToken || undefined
-        };
+            // Setup listeners only if not already done and socket is connected
+            if (!this.listenersSetup && socketStore.isConnected) {
+                this.setupSocketListeners();
+            }
 
-        socketStore.log('info', 'Joining room with validated permissions...', {
-            joinRequest: {
-                ...joinRequest,
-                reconnectionToken: joinRequest.reconnectionToken ? '[REDACTED]' : undefined
-            },
-            userRole: access.userRole
-        });
+            runInAction(() => {
+                this.isJoiningRoom = true;
+                this.error = null;
+            });
 
-        try {
+            const joinRequest: JoinRoomRequest = {
+                eventId: eventStore.currentEvent.eventId,
+                roomId: eventStore.currentEvent.roomId,
+                extUserId: sessionStore.userInfo.userId,
+                userName: sessionStore.userInfo.userName,
+                userEmail: sessionStore.userInfo.userEmail,
+                reconnectionToken: this.reconnectionToken || undefined
+            };
+
+            // Check for duplicate request
+            if (this.lastJoinRequest &&
+                JSON.stringify(this.lastJoinRequest) === JSON.stringify(joinRequest)) {
+                socketStore.log('warning', 'Duplicate join request detected, skipping');
+                runInAction(() => {
+                    this.isJoiningRoom = false;
+                });
+                return false;
+            }
+
+            this.lastJoinRequest = joinRequest;
+
+            socketStore.log('info', 'Joining room with validated permissions...', {
+                joinRequest: {
+                    ...joinRequest,
+                    reconnectionToken: joinRequest.reconnectionToken ? '[REDACTED]' : undefined
+                },
+                userRole: access.userRole
+            });
+
             const response = await socketStore.emitWithCallback<JoinRoomResponse>(
                 'join-room',
                 joinRequest
@@ -165,6 +245,12 @@ class RoomStore {
 
             socketStore.log('error', 'Room joining error', { error: errorMessage });
             return false;
+        } finally {
+            this.joinAttemptInProgress = false;
+            // Clear the last request after a delay to allow for legitimate retries
+            setTimeout(() => {
+                this.lastJoinRequest = null;
+            }, 5000);
         }
     }
 
@@ -201,6 +287,15 @@ class RoomStore {
     }
 
     handleRoomUpdate(data: RoomUpdateEvent): void {
+        // Validate that this update is for our current room
+        if (!this.currentRoom || data.roomId !== this.currentRoom.id) {
+            socketStore.log('warning', 'Received room update for different room', {
+                receivedRoomId: data.roomId,
+                currentRoomId: this.currentRoom?.id
+            });
+            return;
+        }
+
         socketStore.log('info', 'Room update received', {
             event: data.event,
             participantCount: data.participants.length,
@@ -221,100 +316,69 @@ class RoomStore {
             case 'participant-joined':
                 socketStore.log('success', 'New participant joined', {
                     participant: data.participant.userName,
-                    role: data.participant.isCreator ? 'host' : 'participant'
+                    role: data.participant.isCreator ? 'host' : 'participant',
+                    totalParticipants: data.participants.length
                 });
                 break;
             case 'participant-left':
                 socketStore.log('info', 'Participant left', {
-                    participant: data.participant.userName
+                    participant: data.participant.userName,
+                    totalParticipants: data.participants.length
                 });
                 break;
             case 'participant-reconnected':
                 socketStore.log('success', 'Participant reconnected', {
-                    participant: data.participant.userName
+                    participant: data.participant.userName,
+                    totalParticipants: data.participants.length
                 });
                 break;
         }
     }
 
-    private handleParticipantJoined(participant: Participant): void {
-        socketStore.log('info', 'New participant notification', {
-            participant: participant.userName,
-            socketId: participant.socketId
+    handleParticipantJoined(participant: Participant): void {
+        socketStore.log('info', 'Participant joined event received', {
+            participantId: participant.id,
+            userName: participant.userName,
+            isCreator: participant.isCreator
         });
 
-        runInAction(() => {
-            const existingIndex = this.participants.findIndex(p => p.socketId === participant.socketId);
-            if (existingIndex === -1) {
-                this.participants.push(participant);
-            } else {
-                this.participants[existingIndex] = participant;
-            }
+        // This is handled by room-updated event, so we just log it
+    }
+
+    handleParticipantLeft(data: { socketId: string; userName: string }): void {
+        socketStore.log('info', 'Participant left event received', {
+            socketId: data.socketId,
+            userName: data.userName
         });
-    }
 
-    private handleParticipantLeft(data: { socketId: string; userName: string }): void {
-        socketStore.log('info', 'Participant left notification', { data });
-
-        runInAction(() => {
-            this.participants = this.participants.filter(p => p.socketId !== data.socketId);
-
-            // Update room participant count
-            if (this.currentRoom) {
-                this.currentRoom.participantCount = this.participants.length;
-            }
-        });
-    }
-
-    // Get user's role in current room
-    getUserRole(): 'host' | 'participant' | 'guest' {
-        if (!this.currentParticipant) return 'guest';
-        return this.currentParticipant.isCreator ? 'host' : 'participant';
-    }
-
-    // Check if current user can perform host actions
-    canPerformHostActions(): boolean {
-        return this.isHost && this.isInRoom;
-    }
-
-    // Get reconnection data for potential reconnection
-    getReconnectionData(): { roomId: string; reconnectionToken: string; userName: string } | null {
-        if (!this.currentRoom || !this.reconnectionToken || !this.currentParticipant) {
-            return null;
-        }
-
-        return {
-            roomId: this.currentRoom.id,
-            reconnectionToken: this.reconnectionToken,
-            userName: this.currentParticipant.userName
-        };
+        // This is handled by room-updated event, so we just log it
     }
 
     clearError(): void {
-        this.error = null;
+        runInAction(() => {
+            this.error = null;
+        });
     }
 
     reset(): void {
-        // Cleanup but preserve reconnection data
-        const reconnectionData = this.getReconnectionData();
+        socketStore.log('info', 'Resetting room store');
 
-        this.currentRoom = null;
-        this.currentParticipant = null;
-        this.participants = [];
-        this.isJoiningRoom = false;
-        this.isInRoom = false;
-        this.error = null;
+        // Remove listeners before reset
+        this.removeSocketListeners();
 
-        // Restore reconnection token if we had one
-        if (reconnectionData) {
-            this.reconnectionToken = reconnectionData.reconnectionToken;
-        } else {
+        runInAction(() => {
+            this.currentRoom = null;
+            this.currentParticipant = null;
+            this.participants = [];
+            this.isJoiningRoom = false;
+            this.isInRoom = false;
             this.reconnectionToken = null;
-        }
-
-        socketStore.log('info', 'Room store reset', {
-            preservedReconnection: !!reconnectionData
+            this.error = null;
         });
+
+        // Reset internal state
+        this.joinAttemptInProgress = false;
+        this.lastJoinRequest = null;
     }
 
     get participantCount(): number {
@@ -322,8 +386,10 @@ class RoomStore {
     }
 
     get isHost(): boolean {
-        return this.currentParticipant?.isCreator || false;
+        return this.currentParticipant?.isCreator ?? false;
     }
 }
 
+// Export singleton instance
 export const roomStore = new RoomStore();
+export default roomStore;

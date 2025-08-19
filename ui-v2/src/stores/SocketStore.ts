@@ -1,4 +1,4 @@
-// stores/SocketStore.ts
+// ui-v2/src/stores/SocketStore.ts
 import { makeObservable, observable, action, computed, runInAction } from 'mobx';
 import { io, Socket } from 'socket.io-client';
 import type {
@@ -22,6 +22,10 @@ class SocketStore {
     retryDelay = 1000;
     retryTimeout: NodeJS.Timeout | null = null;
 
+    // Add connection management flags
+    private connectionInProgress = false;
+    private shouldAutoReconnect = true;
+
     constructor() {
         makeObservable(this, {
             socket: observable.ref,
@@ -39,95 +43,43 @@ class SocketStore {
     }
 
     async connect(serverUrl = 'http://localhost:3001'): Promise<void> {
-        if (this.isConnected || this.isConnecting) {
-            this.log('warning', 'Already connected or connecting');
+        // Prevent multiple simultaneous connection attempts
+        if (this.isConnected || this.isConnecting || this.connectionInProgress) {
+            this.log('warning', 'Already connected, connecting, or connection in progress');
             return;
         }
 
-        runInAction(() => {
-            this.isConnecting = true;
-            this.connectionError = null;
-        });
-
-        this.log('info', `Connecting to server (attempt ${this.retryAttempts + 1}/${this.maxRetryAttempts})...`, { serverUrl });
+        this.connectionInProgress = true;
 
         try {
+            runInAction(() => {
+                this.isConnecting = true;
+                this.connectionError = null;
+            });
+
+            this.log('info', `Connecting to server (attempt ${this.retryAttempts + 1}/${this.maxRetryAttempts})...`, { serverUrl });
+
+            // Clean up existing socket completely
+            if (this.socket) {
+                this.log('info', 'Cleaning up existing socket connection');
+                this.socket.removeAllListeners();
+                this.socket.disconnect();
+                this.socket = null;
+            }
+
             this.socket = io(serverUrl, {
                 transports: ['websocket', 'polling'],
                 timeout: 10000,
-                reconnection: true,
-                reconnectionAttempts: 5,
-                reconnectionDelay: 1000
+                reconnection: false, // Disable auto-reconnection to control it manually
+                reconnectionAttempts: 0,
+                forceNew: true // Force new connection
             });
 
-            // Connection event handlers
-            this.socket.on('connect', () => {
-                runInAction(() => {
-                    this.isConnected = true;
-                    this.isConnecting = false;
-                    this.connectionError = null;
-                });
-                this.resetRetry();
-                this.log('success', 'Connected to server', { socketId: this.socket?.id });
-            });
-
-            this.socket.on('connect_error', (error) => {
-                runInAction(() => {
-                    this.isConnecting = false;
-                    this.connectionError = error.message;
-                });
-                this.log('error', 'Connection error', { error: error.message });
-                this.handleConnectionFailure();
-            });
-
-            this.socket.on('disconnect', (reason) => {
-                runInAction(() => {
-                    this.isConnected = false;
-                    this.isConnecting = false;
-                });
-                this.log('warning', 'Disconnected from server', { reason });
-
-                // Auto-retry if disconnected unexpectedly
-                if (reason !== 'io client disconnect') {
-                    this.handleConnectionFailure();
-                }
-            });
-
-            this.socket.on('reconnect', (attemptNumber) => {
-                runInAction(() => {
-                    this.isConnected = true;
-                    this.connectionError = null;
-                });
-                this.resetRetry();
-                this.log('success', 'Reconnected to server', { attemptNumber });
-            });
-
-            this.socket.on('reconnect_error', (error) => {
-                this.log('error', 'Reconnection error', { error: error.message });
-            });
-
-            this.socket.on('error', (data) => {
-                this.log('error', 'Server error', { data });
-            });
+            // Setup connection event handlers
+            this.setupConnectionHandlers();
 
             // Wait for connection with timeout
-            await new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('Connection timeout'));
-                }, 15000);
-
-                if (this.socket) {
-                    this.socket.once('connect', () => {
-                        clearTimeout(timeout);
-                        resolve();
-                    });
-
-                    this.socket.once('connect_error', (error) => {
-                        clearTimeout(timeout);
-                        reject(error);
-                    });
-                }
-            });
+            await this.waitForConnection();
 
         } catch (error) {
             runInAction(() => {
@@ -137,32 +89,136 @@ class SocketStore {
             this.log('error', 'Failed to connect', { error: (error as Error).message });
             this.handleConnectionFailure();
             throw error;
+        } finally {
+            this.connectionInProgress = false;
         }
     }
 
-    private handleConnectionFailure(): void {
-        if (this.retryAttempts < this.maxRetryAttempts) {
+    private setupConnectionHandlers(): void {
+        if (!this.socket) return;
+
+        this.log('info', 'Setting up socket connection handlers');
+
+        this.socket.on('connect', () => {
             runInAction(() => {
-                this.retryAttempts++;
+                this.isConnected = true;
+                this.isConnecting = false;
+                this.connectionError = null;
             });
+            this.resetRetry();
+            this.log('success', 'Connected to server', { socketId: this.socket?.id });
+        });
 
-            const delay = this.retryDelay * Math.pow(2, this.retryAttempts - 1); // Exponential backoff
-            this.log('info', `Retrying connection in ${delay}ms...`, {
-                attempt: this.retryAttempts,
-                maxAttempts: this.maxRetryAttempts
+        this.socket.on('connect_error', (error) => {
+            runInAction(() => {
+                this.isConnecting = false;
+                this.connectionError = error.message;
             });
+            this.log('error', 'Connection error', { error: error.message });
+        });
 
-            this.retryTimeout = setTimeout(() => {
-                this.connect().catch((error) => {
-                    this.log('error', 'Retry connection failed', { error: error.message });
-                });
-            }, delay);
-        } else {
+        this.socket.on('disconnect', (reason) => {
+            runInAction(() => {
+                this.isConnected = false;
+                this.isConnecting = false;
+            });
+            this.log('warning', 'Disconnected from server', { reason });
+
+            // Only retry if:
+            // 1. Disconnection was unexpected (not manual)
+            // 2. Auto-reconnect is enabled
+            // 3. We haven't exceeded retry attempts
+            // 4. Not already trying to reconnect
+            if (reason !== 'io client disconnect' &&
+                this.shouldAutoReconnect &&
+                this.retryAttempts < this.maxRetryAttempts &&
+                !this.connectionInProgress) {
+                this.handleConnectionFailure();
+            }
+        });
+
+        this.socket.on('reconnect', (attemptNumber) => {
+            runInAction(() => {
+                this.isConnected = true;
+                this.connectionError = null;
+            });
+            this.resetRetry();
+            this.log('success', 'Reconnected to server', { attemptNumber });
+        });
+
+        this.socket.on('reconnect_error', (error) => {
+            this.log('error', 'Reconnection error', { error: error.message });
+        });
+
+        this.socket.on('error', (data) => {
+            this.log('error', 'Server error', { data });
+        });
+    }
+
+    private async waitForConnection(): Promise<void> {
+        return new Promise<void>((resolve, reject) => {
+            if (!this.socket) {
+                reject(new Error('Socket not available'));
+                return;
+            }
+
+            const timeout = setTimeout(() => {
+                cleanup();
+                reject(new Error('Connection timeout'));
+            }, 15000);
+
+            const cleanup = () => {
+                clearTimeout(timeout);
+                this.socket?.off('connect', onConnect);
+                this.socket?.off('connect_error', onError);
+            };
+
+            const onConnect = () => {
+                cleanup();
+                resolve();
+            };
+
+            const onError = (error: Error) => {
+                cleanup();
+                reject(error);
+            };
+
+            // If already connected, resolve immediately
+            if (this.socket.connected) {
+                cleanup();
+                resolve();
+                return;
+            }
+
+            this.socket.once('connect', onConnect);
+            this.socket.once('connect_error', onError);
+        });
+    }
+
+    private handleConnectionFailure(): void {
+        if (this.retryAttempts >= this.maxRetryAttempts) {
             this.log('error', 'Max retry attempts reached. Connection failed permanently.');
             runInAction(() => {
                 this.connectionError = 'Connection failed after maximum retry attempts';
             });
+            return;
         }
+
+        runInAction(() => {
+            this.retryAttempts++;
+        });
+
+        const delay = this.retryDelay * Math.pow(2, this.retryAttempts - 1); // Exponential backoff
+        this.log('info', `Retrying connection in ${delay}ms...`, {
+            attempt: this.retryAttempts,
+            maxAttempts: this.maxRetryAttempts
+        });
+
+        this.retryTimeout = setTimeout(() => {
+            this.connect().catch((error) => {
+                this.log('error', 'Retry connection failed', { error: error.message });
+            });
+        }, delay);
     }
 
     resetRetry(): void {
@@ -176,10 +232,15 @@ class SocketStore {
     }
 
     disconnect(): void {
+        this.log('info', 'Manually disconnecting from server...');
+
+        // Disable auto-reconnect for manual disconnections
+        this.shouldAutoReconnect = false;
+
         this.resetRetry();
 
         if (this.socket) {
-            this.log('info', 'Disconnecting from server...');
+            this.socket.removeAllListeners();
             this.socket.disconnect();
             this.socket = null;
         }
@@ -189,6 +250,11 @@ class SocketStore {
             this.isConnecting = false;
             this.connectionError = null;
         });
+
+        // Re-enable auto-reconnect after a delay
+        setTimeout(() => {
+            this.shouldAutoReconnect = true;
+        }, 1000);
     }
 
     // Enhanced emit method with promise-based callbacks and logging
@@ -229,7 +295,7 @@ class SocketStore {
         });
     }
 
-    // Register event listener with logging
+    // Register event listener with logging and duplicate prevention
     on<K extends keyof ServerToClientEvents>(
         event: K,
         handler: ServerToClientEvents[K]
@@ -246,6 +312,8 @@ class SocketStore {
             (handler as any)(...args);
         };
 
+        // Remove any existing listeners for this event first
+        this.socket.off(event as any);
         this.socket.on(event as any, wrappedHandler as any);
     }
 
@@ -261,6 +329,24 @@ class SocketStore {
 
         this.log('info', `Removing listener for event: ${String(event)}`);
         this.socket.off(event as any, handler as any);
+    }
+
+    // Remove all listeners for cleanup
+    removeAllListeners(): void {
+        if (!this.socket) {
+            this.log('warning', 'Cannot remove listeners: socket not available');
+            return;
+        }
+
+        this.log('info', 'Removing all socket listeners');
+        this.socket.removeAllListeners();
+    }
+
+    clearLogs(): void {
+        runInAction(() => {
+            this.logs = [];
+        });
+        this.log('info', 'Logs cleared');
     }
 
     // Logging method
@@ -284,15 +370,15 @@ class SocketStore {
 
         // Also log to console for development
         const logMethod = level === 'error' ? console.error :
-            level === 'warning' ? console.warn : console.log;
-        logMethod(`[SocketStore] ${message}`, data || '');
-    }
+            level === 'warning' ? console.warn :
+                level === 'success' ? console.log :
+                    console.log;
 
-    clearLogs(): void {
-        runInAction(() => {
-            this.logs = [];
-        });
-        this.log('info', 'Logs cleared');
+        if (data) {
+            logMethod(`[SOCKET] [${level.toUpperCase()}] ${message}`, data);
+        } else {
+            logMethod(`[SOCKET] [${level.toUpperCase()}] ${message}`);
+        }
     }
 
     get connectionStatus(): ConnectionStatus {
@@ -303,4 +389,6 @@ class SocketStore {
     }
 }
 
+// Export singleton instance
 export const socketStore = new SocketStore();
+export default socketStore;
